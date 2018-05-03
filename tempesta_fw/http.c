@@ -55,6 +55,9 @@ static struct {
 	unsigned int sz;
 } tfw_wl_marks;
 
+/* Proxy buffering size. */
+static size_t tfw_cfg_proxy_buff_sz;
+
 #define S_CRLFCRLF		"\r\n\r\n"
 #define S_HTTP			"http://"
 
@@ -3452,6 +3455,25 @@ tfw_cfgop_cleanup_block_action(TfwCfgSpec *cs)
 	tfw_blk_flags = TFW_CFG_BLK_DEF;
 }
 
+static int
+tfw_cfgop_proxy_buffering(TfwCfgSpec *cs, TfwCfgEntry *ce)
+{
+	int r;
+	long val = 0;
+
+	cs->dest = &val;
+
+	if ((r = tfw_cfg_set_long(cs, ce)))
+		return r;
+
+	if (val == -1)
+		tfw_cfg_proxy_buff_sz = LONG_MAX;
+	else
+		tfw_cfg_proxy_buff_sz = val;
+
+	return 0;
+}
+
 /* Macros specific to *_set_body() functions. */
 #define __TFW_STR_SET_BODY()						\
 	msg->len += l_size - clen_str->len + b_size - body_str->len;	\
@@ -3843,8 +3865,6 @@ tfw_cfgop_whitelist_mark(TfwCfgSpec *cs, TfwCfgEntry *ce)
 
 	TFW_CFG_ENTRY_FOR_EACH_VAL(ce, i, val) {
 		if (tfw_cfg_parse_int(val, &tfw_wl_marks.mrks[i])) {
-			TFW_ERR_NL("Unable to parse whitelist"
-				   " mark value: '%s'\n", val);
 			kfree(tfw_wl_marks.mrks);
 			return -EINVAL;
 		}
@@ -4028,6 +4048,15 @@ static TfwCfgSpec tfw_http_specs[] = {
 		.allow_repeat = true,
 		.allow_none = true,
 		.cleanup = tfw_cfgop_cleanup_block_action,
+	},
+	{
+		.name = "proxy_buffering",
+		.deflt = "10485760", /* 10 MB */
+		.handler = tfw_cfgop_proxy_buffering,
+		.spec_ext = &(TfwCfgSpecInt) {
+			.range = { -1, LONG_MAX },
+		},
+		.allow_none = true,
 	},
 	{
 		.name = "response_body",
