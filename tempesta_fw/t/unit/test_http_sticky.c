@@ -276,11 +276,16 @@ TEST(http_sticky, sending_302_without_preparing)
 	TfwConn *c = mock.req->conn;
 
 	/* Cookie is calculated for zero HMAC. */
-	EXPECT_EQ(tfw_http_sticky_send_redirect(mock.req, &sv),
-		  TFW_HTTP_SESS_REDIRECT_SENT);
+	EXPECT_EQ(tfw_http_sticky_build_redirect(mock.req, &sv),
+		  TFW_HTTP_SESS_REDIRECT_NEED);
+	EXPECT_NOT_NULL(mock.req->resp);
+	if (!mock.req->resp)
+		goto err;
+	tfw_http_resp_fwd(mock.req->resp);
 
 	EXPECT_TRUE(mock.tfw_connection_send_was_called);
 
+err:
 	tfw_connection_put(c);
 	mock.req = NULL; /* already freed */
 }
@@ -302,14 +307,19 @@ TEST(http_sticky, sending_302)
 		mock.req->h_tbl->tbl[TFW_HTTP_HDR_HOST] = *hdr1;
 
 		EXPECT_EQ(__sticky_calc(mock.req, &sv), 0);
-		EXPECT_EQ(tfw_http_sticky_send_redirect(mock.req, &sv),
-			  TFW_HTTP_SESS_REDIRECT_SENT);
+		EXPECT_EQ(tfw_http_sticky_build_redirect(mock.req, &sv),
+			  TFW_HTTP_SESS_REDIRECT_NEED);
+		EXPECT_NOT_NULL(mock.req->resp);
+		if (!mock.req->resp)
+			goto err;
+		tfw_http_resp_fwd(mock.req->resp);
 
 		EXPECT_TRUE(mock.tfw_connection_send_was_called);
 		EXPECT_TRUE(mock.seen_set_cookie_header);
 		EXPECT_TRUE(mock.seen_cookie);
 		EXPECT_EQ(mock.http_status, 302);
 
+err:
 		tfw_connection_put(c);
 		mock.req = NULL; /* already freed */
 	}
@@ -502,7 +512,11 @@ TEST(http_sticky, req_no_cookie_enforce)
 
 	append_string_to_msg((TfwHttpMsg *)mock.req, s_req);
 	EXPECT_EQ(http_parse_req_helper(), 0);
-	EXPECT_EQ(tfw_http_sess_obtain(mock.req), TFW_HTTP_SESS_REDIRECT_SENT);
+	EXPECT_EQ(tfw_http_sess_obtain(mock.req), TFW_HTTP_SESS_REDIRECT_NEED);
+	EXPECT_NOT_NULL(mock.req->resp);
+	if (!mock.req->resp)
+		goto err;
+	tfw_http_resp_fwd(mock.req->resp);
 
 	/* in enforce mode, 302 response is sent to a client by Tempesta
 	 * before backend gets anything
@@ -511,6 +525,7 @@ TEST(http_sticky, req_no_cookie_enforce)
 	EXPECT_TRUE(mock.seen_set_cookie_header);
 	EXPECT_TRUE(mock.seen_cookie);
 
+err:
 	tfw_connection_put(c);
 	mock.req = NULL; /* already freed */
 }

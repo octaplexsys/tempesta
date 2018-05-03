@@ -126,7 +126,7 @@ static const unsigned short tfw_cfg_redirect_st_code_dflt = 302;
  * 'Accept: text/html' and GET method.
  */
 static bool
-tfw_http_sticky_redirect_allied(TfwHttpReq *req)
+tfw_http_sticky_redirect_applied(TfwHttpReq *req)
 {
 	if (!tfw_cfg_js_ch)
 		return true;
@@ -136,7 +136,7 @@ tfw_http_sticky_redirect_allied(TfwHttpReq *req)
 }
 
 static int
-tfw_http_sticky_send_redirect(TfwHttpReq *req, StickyVal *sv)
+tfw_http_sticky_build_redirect(TfwHttpReq *req, StickyVal *sv)
 {
 	unsigned long ts_be64 = cpu_to_be64(sv->ts);
 	TfwStr chunks[3], cookie = { 0 };
@@ -154,7 +154,7 @@ tfw_http_sticky_send_redirect(TfwHttpReq *req, StickyVal *sv)
 	 * Non-challengeable requests also must be rate limited.
 	 */
 
-	if (!tfw_http_sticky_redirect_allied(req))
+	if (!tfw_http_sticky_redirect_applied(req))
 		return TFW_HTTP_SESS_JS_NOT_SUPPORTED;
 
 	if (!(resp = tfw_http_msg_alloc_resp_light(req)))
@@ -189,9 +189,12 @@ tfw_http_sticky_send_redirect(TfwHttpReq *req, StickyVal *sv)
 		return TFW_HTTP_SESS_FAILURE;
 	}
 
-	tfw_http_resp_fwd(resp);
-
-	return TFW_HTTP_SESS_REDIRECT_SENT;
+	/*
+	 * Don't send @resp now: cookie check take place on very early @req
+	 * processing stage, store @resp as @req->resp, the response will be
+	 * sent as soon as @req will be fully processed.
+	 */
+	return TFW_HTTP_SESS_REDIRECT_NEED;
 }
 
 static int
@@ -387,7 +390,7 @@ tfw_http_sticky_add(TfwHttpResp *resp)
 		.flags = 3 << TFW_STR_CN_SHIFT
 	};
 
-	/* See comment from tfw_http_sticky_send_redirect(). */
+	/* See comment from tfw_http_sticky_build_redirect(). */
 	bin2hex(buf, &ts_be64, sizeof(ts_be64));
 	bin2hex(&buf[sizeof(ts_be64) * 2], sess->hmac, sizeof(sess->hmac));
 
@@ -428,7 +431,7 @@ tfw_http_sticky_notfound(TfwHttpReq *req)
 	if (tfw_http_sticky_calc(req, &sv) != 0)
 		return TFW_HTTP_SESS_FAILURE;
 
-	return tfw_http_sticky_send_redirect(req, &sv);
+	return tfw_http_sticky_build_redirect(req, &sv);
 }
 
 #define sess_warn(check, addr, fmt, ...)				\
@@ -529,7 +532,7 @@ tfw_http_sticky_req_process(TfwHttpReq *req, StickyVal *sv)
 		 * keep user experience intact.
 		 */
 		if (tfw_http_sticky_verify(req, &cookie_val, sv))
-			return tfw_http_sticky_send_redirect(req, sv);
+			return tfw_http_sticky_build_redirect(req, sv);
 		return TFW_HTTP_SESS_SUCCESS;
 	}
 	TFW_WARN("Multiple Tempesta sticky cookies found: %d\n", r);

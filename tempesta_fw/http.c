@@ -2427,37 +2427,11 @@ tfw_http_req_cache_service(TfwHttpResp *resp)
 static void
 tfw_http_req_cache_cb(TfwHttpMsg *msg)
 {
-	int r;
 	TfwHttpReq *req = (TfwHttpReq *)msg;
 	TfwSrvConn *srv_conn = NULL;
 	LIST_HEAD(eq);
 
 	TFW_DBG2("%s: req = %p, resp = %p\n", __func__, req, req->resp);
-
-	/*
-	 * Sticky cookie module used for HTTP session identification may send
-	 * a response to the client when sticky cookie presence is enforced
-	 * and the cookie is missing from the request.
-	 *
-	 * HTTP session may be required for request scheduling, so obtain it
-	 * first. However, req->sess still may be NULL if sticky cookies are
-	 * not enabled.
-	 */
-	r = tfw_http_sess_obtain(req);
-	switch (r)
-	{
-	case TFW_HTTP_SESS_SUCCESS:
-		break;
-	case TFW_HTTP_SESS_REDIRECT_SENT:
-		/* Response sent, nothing to do. */
-		return;
-	case TFW_HTTP_SESS_VIOLATE:
-		goto drop_503;
-	case TFW_HTTP_SESS_JS_NOT_SUPPORTED:
-		goto send_503;
-	default:
-		goto send_500;
-	}
 
 	if (req->resp) {
 		tfw_http_req_cache_service(req->resp);
@@ -2491,20 +2465,6 @@ tfw_http_req_cache_cb(TfwHttpMsg *msg)
 	tfw_http_req_zap_error(&eq);
 	goto conn_put;
 
-send_503:
-	/*
-	 * Requested resource can't be challenged. Don't break response-request
-	 * queue on client side by dropping the request.
-	 */
-	tfw_http_send_resp(req, 503, "request dropped:"
-			   " can't send JS challenge.");
-	TFW_INC_STAT_BH(clnt.msgs_filtout);
-	return;
-drop_503:
-	tfw_srv_client_drop(req, 503, "request dropped: invalid sticky cookie "
-				      "or js challenge");
-	TFW_INC_STAT_BH(clnt.msgs_filtout);
-	return;
 send_502:
 	tfw_http_send_resp(req, 502, "request dropped: processing error");
 	TFW_INC_STAT_BH(clnt.msgs_otherr);
@@ -2998,6 +2958,49 @@ next_req:
 			req->httperr.reason = "cannot find Vhost for request";
 			__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
 		}
+		/*
+		 * Sticky cookie module used for HTTP session identification
+		 * may send a response to the client when sticky cookie presence
+		 * is enforced and the cookie is missing from the request.
+		 *
+		 * Client can violate sticky cookie, block such client without
+		 * forwarding the request to backend server.
+		 */
+		switch (tfw_http_sess_obtain(req))
+		{
+		case TFW_HTTP_SESS_SUCCESS:
+			break;
+		case TFW_HTTP_SESS_REDIRECT_NEED:
+			/*
+			 * Response is build and stored in @req->resp,
+			 * process it later on forward stage.
+			 */
+			break;
+		case TFW_HTTP_SESS_VIOLATE:
+			TFW_INC_STAT_BH(clnt.msgs_filtout);
+			req->httperr.status = 503;
+			req->httperr.reason =
+				"request dropped: invalid sticky cookie or js challenge";
+			__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
+		case TFW_HTTP_SESS_JS_NOT_SUPPORTED:
+			/*
+			 * Requested resource can't be challenged. Don't break
+			 * response-request queue on client side by dropping
+			 * the request.
+			 */
+			TFW_INC_STAT_BH(clnt.msgs_filtout);
+			req->httperr.status = 503;
+			req->httperr.reason =
+				"request dropped: can't send JS challenge.";
+			__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
+		default:
+			TFW_INC_STAT_BH(clnt.msgs_otherr);
+			req->httperr.status = 500;
+			req->httperr.reason =
+				"request dropped: processing error";
+			__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
+		}
+
 		if (!stream_mode)
 			__HTTP_FSM_JUMP(Http_Msg_Done);
 		__HTTP_FSM_JUMP(Http_Msg_Fwd);
