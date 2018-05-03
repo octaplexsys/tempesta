@@ -227,7 +227,7 @@ tfw_gfsm_move(TfwGState *st, unsigned short state, const TfwFsmData *data)
 	/* Remember current FSM context. */
 	SET_STATE(st, state);
 
-	/* Start from higest priority. */
+	/* Start from highest priority. */
 	for (p = TFW_GFSM_HOOK_PRIORITY_HIGH;
 	     p < TFW_GFSM_HOOK_PRIORITY_NUM; ++p)
 	{
