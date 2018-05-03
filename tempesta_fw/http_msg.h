@@ -123,6 +123,8 @@ int tfw_http_msg_write(TfwMsgIter *it, TfwHttpMsg *hm, const TfwStr *data);
 int tfw_http_msg_add_data(TfwMsgIter *it, TfwHttpMsg *hm, TfwStr *field,
 			  const TfwStr *data);
 
+int tfw_http_msg_to_chunked(TfwHttpMsg *hm);
+
 void tfw_http_msg_hdr_open(TfwHttpMsg *hm, unsigned char *hdr_start);
 int tfw_http_msg_hdr_close(TfwHttpMsg *hm, unsigned int id);
 int tfw_http_msg_grow_hdr_tbl(TfwHttpMsg *hm);

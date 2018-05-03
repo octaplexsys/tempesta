@@ -294,6 +294,8 @@ enum {
 	TFW_HTTP_B_CONN_EXTRA,
 	/* Chunked transfer encoding. */
 	TFW_HTTP_B_CHUNKED,
+	/* Transform message to chunked transfer encoding. */
+	TFW_HTTP_B_CHUNKED_TRANSFORM,
 	/* Singular header presents more than once. */
 	TFW_HTTP_B_FIELD_DUPENTRY,
 	/* Message is processed in streaming mode. */
@@ -342,6 +344,7 @@ enum {
 	(TFW_HTTP_F_CONN_KA | TFW_HTTP_F_CONN_CLOSE)
 #define TFW_HTTP_F_CONN_EXTRA		(1U << TFW_HTTP_B_CONN_EXTRA)
 #define TFW_HTTP_F_CHUNKED		(1U << TFW_HTTP_B_CHUNKED)
+#define TFW_HTTP_F_CHUNKED_TRANSFORM	(1U << TFW_HTTP_B_CHUNKED_TRANSFORM)
 #define TFW_HTTP_F_FIELD_DUPENTRY	(1U << TFW_HTTP_B_FIELD_DUPENTRY)
 #define TFW_HTTP_F_MSG_STREAM		(1U << TFW_HTTP_B_MSG_STREAM)
 

@@ -921,6 +921,11 @@ next_frag:
 	return 0;
 }
 
+int tfw_http_msg_to_chunked(TfwHttpMsg *hm)
+{
+	return 0;
+}
+
 void
 tfw_http_msg_pair(TfwHttpResp *resp, TfwHttpReq *req)
 {

@@ -64,4 +64,6 @@ typedef struct {
 	size_t			len;
 } TfwMsg;
 
+bool tfw_http_msg_is_streamed(TfwMsg *msg);
+
 #endif /* __TFW_MSG_H__ */

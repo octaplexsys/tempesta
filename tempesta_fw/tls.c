@@ -328,17 +328,41 @@ tfw_tls_conn_send(TfwConn *c, TfwMsg *msg)
 
 	tls_dbg(c, "=>");
 
-	while ((skb = ss_skb_dequeue(&msg->skb_head))) {
+	if (tfw_http_msg_is_streamed(msg))
+		spin_lock(&msg->stream_lock);
+
+	while ((skb = ss_skb_dequeue(&msg->head_skb))) {
 		if (tfw_tls_send_skb(c, skb)) {
 			kfree_skb(skb);
-			return -EINVAL;
+			goto err;
 		}
 	}
+	while ((skb = ss_skb_dequeue(&msg->body_skb))) {
+		if (tfw_tls_send_skb(c, skb)) {
+			kfree_skb(skb);
+			goto err;
+		}
+	}
+	while ((skb = ss_skb_dequeue(&msg->trailer_skb))) {
+		if (tfw_tls_send_skb(c, skb)) {
+			kfree_skb(skb);
+			goto err;
+		}
+	}
+
+	if (tfw_http_msg_is_streamed(msg))
+		spin_unlock(&msg->stream_lock);
 
 	if (msg->ss_flags & SS_F_CONN_CLOSE)
 		ttls_ssl_close_notify(tls);
 
 	return 0;
+
+err:
+	if (tfw_http_msg_is_streamed(msg))
+		spin_unlock(&msg->stream_lock);
+
+	return -EINVAL;
 }
 
 static TfwConnHooks tls_conn_hooks = {

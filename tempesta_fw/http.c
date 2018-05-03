@@ -689,6 +689,12 @@ __tfw_http_msg_is_streamed(TfwHttpMsg *msg)
 	return (msg->flags & TFW_HTTP_F_MSG_STREAM);
 }
 
+bool tfw_http_msg_is_streamed(TfwMsg *msg)
+{
+	return __tfw_http_msg_is_streamed((TfwHttpMsg *)msg);
+}
+EXPORT_SYMBOL(tfw_http_msg_is_streamed);
+
 /*
  * Reset the flag saying that @srv_conn has non-idempotent requests.
  */
@@ -749,7 +755,8 @@ tfw_http_conn_nip_adjust(TfwSrvConn *srv_conn)
 
 /*
  * Tell if the server connection's forwarding queue is on hold.
- * It's on hold it the request that was sent last was non-idempotent.
+ * It's on hold it the request that was sent last was non-idempotent or
+ * in streaming mode.
  */
 static inline bool
 tfw_http_conn_on_hold(TfwSrvConn *srv_conn)
@@ -757,7 +764,8 @@ tfw_http_conn_on_hold(TfwSrvConn *srv_conn)
 	TfwHttpReq *req_sent = (TfwHttpReq *)srv_conn->msg_sent;
 
 	BUG_ON(!(TFW_CONN_TYPE(srv_conn) & Conn_Srv));
-	return (req_sent && tfw_http_req_is_nip(req_sent));
+	return (req_sent && tfw_http_req_is_nip(req_sent)
+		&& __tfw_http_msg_is_streamed((TfwHttpMsg *)req_sent));
 }
 
 /*
@@ -1059,12 +1067,20 @@ static inline bool
 tfw_http_req_evict_retries(TfwSrvConn *srv_conn, TfwServer *srv,
 			   TfwHttpReq *req, struct list_head *eq)
 {
-	if (unlikely(req->retries++ >= srv->sg->max_refwd)) {
+	unsigned short max_refwd = srv->sg->max_refwd;
+
+	/*
+	 * Streamed request cant be sent more than once, Tempesta doesn't
+	 * keep it's full copy.
+	 */
+	if (unlikely(__tfw_http_msg_is_streamed((TfwHttpMsg *)req)))
+		max_refwd = 1;
+
+	if (unlikely(req->retries++ >= max_refwd)) {
 		TFW_DBG2("%s: Eviction: req=[%p] retries=[%d]\n",
 			 __func__, req, req->retries);
 		tfw_http_req_err(srv_conn, req, eq, 504,
-				 "request evicted: the number"
-				 " of retries exceeded");
+				 "request evicted: the number of retries exceeded");
 		return true;
 	}
 	return false;
@@ -1165,6 +1181,9 @@ tfw_http_conn_fwd_unsent(TfwSrvConn *srv_conn, struct list_head *eq)
 	list_for_each_entry_safe_from(req, tmp, fwd_queue, fwd_list) {
 		if (!tfw_http_req_fwd_single(srv_conn, srv, req, eq))
 			continue;
+		/* Stop forwarding if the request is in streaming. */
+		if (__tfw_http_msg_is_streamed((TfwHttpMsg *)req))
+			break;
 		/* Stop forwarding if the request is non-idempotent. */
 		if (tfw_http_req_is_nip(req))
 			break;
@@ -1210,6 +1229,9 @@ tfw_http_req_fwd(TfwSrvConn *srv_conn, TfwHttpReq *req, struct list_head *eq)
 {
 	TFW_DBG2("%s: srv_conn=[%p], req=[%p]\n", __func__, srv_conn, req);
 	BUG_ON(!(TFW_CONN_TYPE(srv_conn) & Conn_Srv));
+
+	if (__tfw_http_msg_is_streamed((TfwHttpMsg *)req))
+		req->state.stream_conn = (TfwConn *)srv_conn;
 
 	spin_lock_bh(&srv_conn->fwd_qlock);
 	list_add_tail(&req->fwd_list, &srv_conn->fwd_queue);
@@ -1863,7 +1885,24 @@ tfw_http_conn_drop(TfwConn *conn)
 static int
 tfw_http_conn_send(TfwConn *conn, TfwMsg *msg)
 {
-	return ss_send(conn->sk, &msg->skb_head, msg->ss_flags);
+	int r;
+
+	if (__tfw_http_msg_is_streamed((TfwHttpMsg *)msg))
+		spin_lock(&msg->stream_lock);
+
+	if ((r = ss_send(conn->sk, &msg->head_skb, msg->ss_flags)))
+		goto err;
+
+	/* Don't keep body skb */
+	if ((r = ss_send(conn->sk, &msg->body_skb,
+			 msg->ss_flags & ~SS_F_KEEP_SKB)))
+		goto err;
+	r = ss_send(conn->sk, &msg->trailer_skb, msg->ss_flags);
+
+err:
+	if (__tfw_http_msg_is_streamed((TfwHttpMsg *)msg))
+		spin_unlock(&msg->stream_lock);
+	return r;
 }
 
 /**
@@ -2207,9 +2246,9 @@ tfw_http_resp_fwd(TfwHttpResp *resp)
 	if (unlikely(list_empty(seq_queue))) {
 		BUG_ON(!list_empty(&req->msg.seq_list));
 		spin_unlock_bh(&cli_conn->seq_qlock);
-		TFW_DBG2("%s: The client was disconnected, drop resp and req: "
-			 "conn=[%p]\n",
-			 __func__, cli_conn);
+		TFW_DBG2("%s: The client was disconnected conn=[%p], drop "
+			 "resp=[%p] and req=[%p]\n",
+			 __func__, cli_conn, resp, req);
 		ss_close_sync(cli_conn->sk, true);
 		tfw_http_resp_pair_free(req);
 		TFW_INC_STAT_BH(serv.msgs_otherr);
@@ -2631,7 +2670,23 @@ tfw_http_skb_queue(TfwHttpMsg *hm, struct sk_buff *skb,
 static int
 tfw_http_stream_req(TfwHttpReq *req)
 {
+	TfwSrvConn *conn = (TfwSrvConn *)req->state.stream_conn;
 	int r = 0;
+
+	spin_lock(&req->msg.stream_lock);
+	spin_lock(&conn->fwd_qlock);
+
+	if (conn->msg_sent && ((TfwHttpReq *)conn->msg_sent == req)) {
+		/* Don't keep body skb */
+		r = ss_send(conn->sk, &req->msg.body_skb,
+			    req->msg.ss_flags & ~SS_F_KEEP_SKB);
+		if (!r)
+			r = ss_send(conn->sk, &req->msg.trailer_skb,
+				    req->msg.ss_flags);
+	}
+
+	spin_lock(&conn->fwd_qlock);
+	spin_unlock(&req->msg.stream_lock);
 
 	return r;
 }
@@ -3272,26 +3327,18 @@ static int
 tfw_http_resp_gfsm(TfwHttpMsg *hmresp, const TfwFsmData *data)
 {
 	int r;
-	TfwHttpReq *req = hmresp->req;
 
 	BUG_ON(!hmresp->conn);
 
 	r = tfw_gfsm_move(&hmresp->conn->state, TFW_HTTP_FSM_RESP_MSG, data);
 	TFW_DBG3("TFW_HTTP_FSM_RESP_MSG return code %d\n", r);
 	if (r == TFW_BLOCK)
-		goto error;
+		return r;
 
 	r = tfw_gfsm_move(&hmresp->conn->state, TFW_HTTP_FSM_LOCAL_RESP_FILTER,
 			  data);
 	TFW_DBG3("TFW_HTTP_FSM_LOCAL_RESP_FILTER return code %d\n", r);
-	if (r == TFW_PASS)
-		return TFW_PASS;
 
-error:
-	tfw_http_popreq(hmresp);
-	tfw_http_conn_msg_free(hmresp);
-	tfw_srv_client_block(req, 502, "response blocked: filtered out");
-	TFW_INC_STAT_BH(serv.msgs_filtout);
 	return r;
 }
 
@@ -3370,7 +3417,25 @@ tfw_http_resp_terminate(TfwHttpMsg *hm)
 static int
 tfw_http_stream_resp(TfwHttpResp *resp)
 {
+	TfwCliConn *conn = (TfwCliConn *)resp->req->conn;
+	TfwHttpReq *last_req;
 	int r = 0;
+
+	spin_lock(&resp->msg.stream_lock);
+
+	last_req = list_first_entry_or_null(&conn->seq_queue, TfwHttpReq,
+					    msg.seq_list);
+	if (last_req == resp->req) {
+		/* Don't keep body skb */
+		r = ss_send(conn->sk, &resp->msg.body_skb,
+			    resp->msg.ss_flags & ~SS_F_KEEP_SKB);
+		if (!r)
+			r = ss_send(conn->sk, &resp->msg.trailer_skb,
+				    resp->msg.ss_flags);
+	}
+
+	spin_unlock(&resp->msg.stream_lock);
+
 	return r;
 }
 

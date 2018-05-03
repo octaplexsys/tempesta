@@ -406,7 +406,7 @@ ss_send(struct sock *sk, struct sk_buff **skb_head, int flags)
 	};
 
 	BUG_ON(!sk);
-	if (WARN_ON_ONCE(!*skb_head))
+	if (!*skb_head)
 		return 0;
 
 	cpu = sk->sk_incoming_cpu;
