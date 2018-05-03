@@ -174,21 +174,37 @@ size_t tfw_ultoa(unsigned long ai, char *buf, unsigned int len);
 #define __TFW_STR_CN_MAX	(~TFW_STR_FMASK)
 /* Str is compound from many chunks, use indirect table for the chunks. */
 #define __TFW_STR_COMPOUND 	(~((1U << TFW_STR_FBITS) - 1))
-/*
- * Str constists from compound or plain strings.
- * Duplicate strings are also always compound on root level.
- */
-#define TFW_STR_DUPLICATE	0x01
-/* The string is complete and will not grow. */
-#define TFW_STR_COMPLETE	0x02
-/* Some name starts at the string chunk. */
-#define TFW_STR_NAME		0x04
-/* Some value starts at the string chunk. */
-#define TFW_STR_VALUE		0x08
-/* The string represents hop-by-hop header, not end-to-end one */
-#define TFW_STR_HBH_HDR		0x10
-/* Weak identifier was set for Etag value. */
-#define TFW_STR_ETAG_WEAK	0x20
+
+/* TfwStr flags. */
+enum {
+	/*
+	 * The string consists from compound or plain strings.
+	 * Duplicate strings are also always compound on root level.
+	 */
+	TFW_STR_B_DUPLICATE	= 1,
+	/* The string is complete and will not grow. */
+	TFW_STR_B_COMPLETE,
+	/* Some name starts at the string chunk. */
+	TFW_STR_B_NAME,
+	/* Some value starts at the string chunk. */
+	TFW_STR_B_VALUE,
+	/* The string represents hop-by-hop header, not end-to-end one */
+	TFW_STR_B_HBH_HDR,
+	/* The string represents trailer header */
+	TFW_STR_B_TRAILER_HDR,
+	/* Weak identifier was set for Etag value. */
+	TFW_STR_B_ETAG_WEAK,
+
+	_TFW_STR_B_NUM
+};
+
+#define TFW_STR_F_DUPLICATE	(1U << TFW_STR_B_DUPLICATE)
+#define TFW_STR_F_COMPLETE	(1U << TFW_STR_B_COMPLETE)
+#define TFW_STR_F_NAME		(1U << TFW_STR_B_NAME)
+#define TFW_STR_F_VALUE		(1U << TFW_STR_B_VALUE)
+#define TFW_STR_F_HBH_HDR	(1U << TFW_STR_B_HBH_HDR)
+#define TFW_STR_F_TRAILER_HDR	(1U << TFW_STR_B_TRAILER_HDR)
+#define TFW_STR_F_ETAG_WEAK	(1U << TFW_STR_B_ETAG_WEAK)
 
 /*
  * @ptr		- pointer to string data or array of nested strings;
@@ -230,7 +246,7 @@ typedef struct {
 
 #define TFW_STR_EMPTY(s)	(!((s)->flags | (s)->len))
 #define TFW_STR_PLAIN(s)	(!((s)->flags & __TFW_STR_COMPOUND))
-#define TFW_STR_DUP(s)		((s)->flags & TFW_STR_DUPLICATE)
+#define TFW_STR_DUP(s)		((s)->flags & TFW_STR_F_DUPLICATE)
 
 /* Get @c'th chunk of @s. */
 #define __TFW_STR_CH(s, c)	((TfwStr *)(s)->ptr + (c))

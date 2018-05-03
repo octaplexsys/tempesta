@@ -171,6 +171,7 @@ __str_grow_tree(TfwPool *pool, TfwStr *str, unsigned int flag, int n)
 TfwStr *
 tfw_str_add_compound(TfwPool *pool, TfwStr *str)
 {
+	BUILD_BUG_ON(_TFW_STR_B_NUM > TFW_STR_FBITS + 1);
 	/* Need to specify exact string duplicate to grow. */
 	BUG_ON(TFW_STR_DUP(str));
 
@@ -184,11 +185,11 @@ tfw_str_add_compound(TfwPool *pool, TfwStr *str)
 TfwStr *
 tfw_str_add_duplicate(TfwPool *pool, TfwStr *str)
 {
-	TfwStr *dup_str = __str_grow_tree(pool, str, TFW_STR_DUPLICATE, 1);
+	TfwStr *dup_str = __str_grow_tree(pool, str, TFW_STR_F_DUPLICATE, 1);
 
 	/* Length for set of duplicate strings has no sense. */
 	str->len = 0;
-	str->flags |= TFW_STR_DUPLICATE;
+	str->flags |= TFW_STR_F_DUPLICATE;
 
 	return dup_str;
 }
@@ -419,7 +420,7 @@ __tfw_strcmpspn(const TfwStr *s1, const TfwStr *s2, int stop, int cs)
 		cs ? (int (*)(const char *, const char *, size_t)) memcmp
 		   : tfw_stricmp;
 
-	BUG_ON((s1->flags | s2->flags) & TFW_STR_DUPLICATE);
+	BUG_ON((s1->flags | s2->flags) & TFW_STR_F_DUPLICATE);
 
 	if (!stop || !s1->len || !s2->len) {
 		n = (int)s1->len - (int)s2->len;
@@ -665,11 +666,11 @@ tfw_str_to_cstr(const TfwStr *str, char *out_buf, int buf_size)
 EXPORT_SYMBOL(tfw_str_to_cstr);
 
 /**
- * HTTP parser can break strings into several chuncks and mark some of them
- * with TFW_STR_VALUE flag. Single string value may oqupie more than one chunk,
- * independent string values divided by non-flagged chunks.
+ * HTTP parser can break strings into several chunks and mark some of them
+ * with TFW_STR_F_VALUE flag. Single string value may occupy more than one
+ * chunk, independent string values divided by non-flagged chunks.
  *
- * Return compaund TfwStr starting at next string value.
+ * Return compound TfwStr starting at next string value.
  */
 TfwStr
 tfw_str_next_str_val(const TfwStr *str)
@@ -686,9 +687,9 @@ tfw_str_next_str_val(const TfwStr *str)
 	r_str.len = str->len;
 
 	for (chunk = str->ptr; chunk != end; ++chunk) {
-		if (!skip && (chunk->flags & TFW_STR_VALUE))
+		if (!skip && (chunk->flags & TFW_STR_F_VALUE))
 			break;
-		if (!(chunk->flags & TFW_STR_VALUE))
+		if (!(chunk->flags & TFW_STR_F_VALUE))
 			skip = false;
 		r_str.len -= chunk->len;
 		TFW_STR_CHUNKN_SUB(&r_str, 1);

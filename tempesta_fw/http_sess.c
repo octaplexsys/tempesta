@@ -208,7 +208,7 @@ search_cookie(TfwPool *pool, const TfwStr *cookie, TfwStr *val)
 	/* Search cookie name. */
 	end = (TfwStr*)cookie->ptr + TFW_STR_CHUNKN(cookie);
 	for (chunk = cookie->ptr; chunk != end; ++chunk, --n) {
-		if (!(chunk->flags & TFW_STR_NAME))
+		if (!(chunk->flags & TFW_STR_F_NAME))
 			continue;
 		/*
 		 * Create a temporary compound string, starting with this
@@ -225,7 +225,7 @@ search_cookie(TfwPool *pool, const TfwStr *cookie, TfwStr *val)
 
 	/* Search cookie value, starting with next chunk. */
 	for (++chunk; chunk != end; ++chunk)
-		if (chunk->flags & TFW_STR_VALUE)
+		if (chunk->flags & TFW_STR_F_VALUE)
 			break;
 	/*
 	 * The party can send us zero-value cookie,

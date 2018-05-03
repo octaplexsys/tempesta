@@ -1319,7 +1319,7 @@ TEST(http_parser, etag)
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
@@ -1340,7 +1340,7 @@ TEST(http_parser, etag)
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_TRUE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				    & TFW_STR_ETAG_WEAK);
+				    & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
@@ -1361,7 +1361,7 @@ TEST(http_parser, etag)
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
@@ -1422,7 +1422,7 @@ TEST(http_parser, if_none_match)
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
@@ -1443,7 +1443,7 @@ TEST(http_parser, if_none_match)
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
@@ -1465,14 +1465,14 @@ TEST(http_parser, if_none_match)
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag_1, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag_2, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
@@ -1495,21 +1495,21 @@ TEST(http_parser, if_none_match)
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag_1, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag_2, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_TRUE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				    & TFW_STR_ETAG_WEAK);
+				    & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
 		EXPECT_EQ(tfw_strcmpspn(&s_etag, &exp_etag_3, '"'), 0);
 		if (!TFW_STR_EMPTY(&s_etag)) {
 			EXPECT_FALSE((TFW_STR_CHUNK(&s_etag, 0))->flags
-				     & TFW_STR_ETAG_WEAK);
+				     & TFW_STR_F_ETAG_WEAK);
 		}
 
 		s_etag = tfw_str_next_str_val(&s_etag);
@@ -1666,7 +1666,7 @@ TEST(http_parser, req_hop_by_hop)
 
 		for(id = 0; id < ht->off; ++id) {
 			field = &ht->tbl[id];
-			EXPECT_FALSE(field->flags & TFW_STR_HBH_HDR);
+			EXPECT_FALSE(field->flags & TFW_STR_F_HBH_HDR);
 		}
 	}
 
@@ -1684,10 +1684,10 @@ TEST(http_parser, req_hop_by_hop)
 			switch (id) {
 			case TFW_HTTP_HDR_CONNECTION:
 			case TFW_HTTP_HDR_KEEP_ALIVE:
-				EXPECT_TRUE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_TRUE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			default:
-				EXPECT_FALSE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_FALSE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			}
 		}
@@ -1709,10 +1709,10 @@ TEST(http_parser, req_hop_by_hop)
 			case TFW_HTTP_HDR_KEEP_ALIVE:
 			case TFW_HTTP_HDR_RAW + 4:
 			case TFW_HTTP_HDR_RAW + 12:
-				EXPECT_TRUE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_TRUE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			default:
-				EXPECT_FALSE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_FALSE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			}
 		}
@@ -1814,10 +1814,10 @@ TEST(http_parser, resp_hop_by_hop)
 			field = &ht->tbl[id];
 			switch (id) {
 			case TFW_HTTP_HDR_SERVER:
-				EXPECT_TRUE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_TRUE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			default:
-				EXPECT_FALSE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_FALSE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			}
 		}
@@ -1838,10 +1838,10 @@ TEST(http_parser, resp_hop_by_hop)
 			case TFW_HTTP_HDR_SERVER:
 			case TFW_HTTP_HDR_CONNECTION:
 			case TFW_HTTP_HDR_KEEP_ALIVE:
-				EXPECT_TRUE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_TRUE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			default:
-				EXPECT_FALSE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_FALSE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			}
 		}
@@ -1864,10 +1864,10 @@ TEST(http_parser, resp_hop_by_hop)
 			case TFW_HTTP_HDR_KEEP_ALIVE:
 			case TFW_HTTP_HDR_RAW + 3:
 			case TFW_HTTP_HDR_RAW + 9:
-				EXPECT_TRUE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_TRUE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			default:
-				EXPECT_FALSE(field->flags & TFW_STR_HBH_HDR);
+				EXPECT_FALSE(field->flags & TFW_STR_F_HBH_HDR);
 				break;
 			}
 		}

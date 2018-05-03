@@ -66,7 +66,7 @@ enum {
  * The following set of macros is for use in generic field processing.
  * @__msg_field_open macro is used for field opening, @__msg_field_fixup
  * is used for updating, and @__msg_field_finish is used when the field
- * is finished. The latter means that the TfwStr{} flag TFW_STR_COMPLETE
+ * is finished. The latter means that the TfwStr{} flag TFW_STR_F_COMPLETE
  * must be raised.
  */
 #define __msg_field_open(field, pos)					\
@@ -78,7 +78,7 @@ enum {
 #define __msg_field_finish(field, pos)					\
 do {									\
 	__msg_field_fixup(field, pos);					\
-	(field)->flags |= TFW_STR_COMPLETE;				\
+	(field)->flags |= TFW_STR_F_COMPLETE;				\
 } while (0)
 
 #define __msg_hdr_chunk_fixup(data, len)				\
@@ -512,7 +512,7 @@ mark_spec_hbh(TfwHttpMsg *hm)
 	for (id = 0; id < TFW_HTTP_HDR_RAW; ++id) {
 		TfwStr *hdr = &hm->h_tbl->tbl[id];
 		if ((hbh_hdrs->spec & (0x1 << id)) && (!TFW_STR_EMPTY(hdr)))
-			hdr->flags |= TFW_STR_HBH_HDR;
+			hdr->flags |= TFW_STR_F_HBH_HDR;
 	}
 }
 
@@ -529,20 +529,19 @@ mark_raw_hbh(TfwHttpMsg *hm, TfwStr *hdr)
 	/*
 	 * Multiple headers with the same name are saved to the same TfwStr,
 	 * so once we bumped into the first of the headers and marked it with
-	 * TFW_STR_HBH_HDR flag no need to keep comparing the header name to
+	 * TFW_STR_F_HBH_HDR flag no need to keep comparing the header name to
 	 * every other header in message.
 	 *
-	 * Unset TFW_STR_HBH_HDR flag for header name to indicate that
+	 * Unset TFW_STR_F_HBH_HDR flag for header name to indicate that
 	 * corresponding hop-by-hop header was found.
 	*/
 	for (i = 0; i < hbh->off; ++i) {
 		TfwStr *hbh_name = &hbh->raw[i];
-		if ((hbh_name->flags & TFW_STR_HBH_HDR)
+		if ((hbh_name->flags & TFW_STR_F_HBH_HDR)
 		    && !(tfw_stricmpspn(&hbh->raw[i], hdr, ':')))
 		{
-			hdr->flags |= TFW_STR_HBH_HDR;
-			hbh_name->flags = hbh_name->flags &
-					~(unsigned int)TFW_STR_HBH_HDR;
+			hdr->flags |= TFW_STR_F_HBH_HDR;
+			hbh_name->flags = hbh_name->flags & ~TFW_STR_F_HBH_HDR;
 			break;
 		}
 	}
@@ -568,14 +567,14 @@ __mark_hbh_hdr(TfwHttpMsg *hm, TfwStr *hdr)
 	if ((hid >= ht->off) || (TFW_STR_EMPTY(&ht->tbl[hid])))
 		return false;
 
-	ht->tbl[hid].flags |= TFW_STR_HBH_HDR;
+	ht->tbl[hid].flags |= TFW_STR_F_HBH_HDR;
 	return true;
 }
 
 /**
  * Add header name listed in Connection header to table of raw headers.
- * If @last is true then (@data, @len) represnts last chunk of header name and
- * chunk with ':' will be added to the end. Otherwize last header in table stays
+ * If @last is true then (@data, @len) represents last chunk of header name and
+ * chunk with ':' will be added to the end. Otherwise last header in table stays
  * open to add more data.
  *
  * After name of hop-by-hop header was completed, will search for headers
@@ -643,11 +642,11 @@ __hbh_parser_add_data(TfwHttpMsg *hm, char *data, unsigned long len, bool last)
 		if (tfw_http_msg_find_hdr(hdr, block))
 			return CSTR_NEQ;
 		/*
-		 * Don't set TFW_STR_HBH_HDR flag if such header was already
+		 * Don't set TFW_STR_F_HBH_HDR flag if such header was already
 		 * parsed. See comment in mark_raw_hbh()
 		 */
 		if (!__mark_hbh_hdr(hm, hdr))
-			hdr->flags |= TFW_STR_HBH_HDR;
+			hdr->flags |= TFW_STR_F_HBH_HDR;
 	};
 
 	return 0;
@@ -768,7 +767,7 @@ __FSM_STATE(RGen_CR) {							\
 #define TFW_HTTP_PARSE_CRLF()						\
 do {									\
 	if (unlikely(c == '\r')) {					\
-		if (msg->crlf.flags & TFW_STR_COMPLETE)			\
+		if (msg->crlf.flags & TFW_STR_F_COMPLETE)		\
 			__FSM_MOVE_nofixup(RGen_CRLFCR);		\
 		if (!msg->crlf.ptr)					\
 			/* The end of the headers part. */		\
@@ -783,7 +782,7 @@ do {									\
 			 */						\
 			tfw_http_msg_set_str_data(msg, &msg->crlf, p);	\
 			msg->crlf.len = 1;				\
-			msg->crlf.flags |= TFW_STR_COMPLETE;		\
+			msg->crlf.flags |= TFW_STR_F_COMPLETE;		\
 			__FSM_JMP(RGen_BodyInit);			\
 		}							\
 		FSM_EXIT(TFW_PASS);					\
@@ -798,7 +797,7 @@ __FSM_STATE(RGen_CRLFCR) {						\
 	if (unlikely(c != '\n'))					\
 		TFW_PARSER_BLOCK(RGen_CRLFCR);				\
 	mark_spec_hbh(msg);						\
-	if (!(msg->crlf.flags & TFW_STR_COMPLETE)) {			\
+	if (!(msg->crlf.flags & TFW_STR_F_COMPLETE)) {			\
 		BUG_ON(!msg->crlf.ptr);					\
 		__msg_field_finish(&msg->crlf, p + 1);			\
 		__FSM_JMP(RGen_BodyInit);				\
@@ -955,7 +954,7 @@ __FSM_STATE(RGen_BodyInit) {						\
 		__FSM_MOVE_nofixup(RGen_BodyStart);			\
 	}								\
 	/* There is no body. */						\
-	msg->body.flags |= TFW_STR_COMPLETE;				\
+	msg->body.flags |= TFW_STR_F_COMPLETE;				\
 	FSM_EXIT(TFW_PASS);						\
 }
 
@@ -969,7 +968,7 @@ __FSM_STATE(RGen_BodyInit) {						\
 									\
 	/* There's no body. */						\
 	if (msg->flags & TFW_HTTP_F_VOID_BODY) {			\
-		msg->body.flags |= TFW_STR_COMPLETE;			\
+		msg->body.flags |= TFW_STR_F_COMPLETE;			\
 		FSM_EXIT(TFW_PASS);					\
 	}								\
 	if (!TFW_STR_EMPTY(&tbl[TFW_HTTP_HDR_TRANSFER_ENCODING])) {	\
@@ -987,7 +986,7 @@ __FSM_STATE(RGen_BodyInit) {						\
 			__FSM_MOVE_nofixup(RGen_BodyStart);		\
 		}							\
 		/* There is no body. */					\
-		msg->body.flags |= TFW_STR_COMPLETE;			\
+		msg->body.flags |= TFW_STR_F_COMPLETE;			\
 		FSM_EXIT(TFW_PASS);					\
 	}								\
 	/* Process the body until the connection is closed. */		\
@@ -1039,7 +1038,7 @@ __FSM_STATE(RGen_BodyReadChunk) {					\
 	/* We've fully read Content-Length bytes. */			\
 	if (tfw_http_msg_add_str_data(msg, &msg->body, p, __fsm_sz))	\
 		TFW_PARSER_BLOCK(RGen_BodyReadChunk);			\
-	msg->body.flags |= TFW_STR_COMPLETE;				\
+	msg->body.flags |= TFW_STR_F_COMPLETE;				\
 	p += __fsm_sz;							\
 	r = TFW_PASS;							\
 	goto done;							\
@@ -1085,7 +1084,7 @@ __FSM_STATE(RGen_BodyCR) {						\
 	if (tfw_http_msg_add_str_data(msg, &msg->body, data,		\
 				      __data_off(p) + 1))		\
 		TFW_PARSER_BLOCK(RGen_BodyCR);				\
-	msg->body.flags |= TFW_STR_COMPLETE;				\
+	msg->body.flags |= TFW_STR_F_COMPLETE;				\
 	/* Process the trailer-part. */					\
 	__FSM_MOVE_nofixup(RGen_Hdr);					\
 }
@@ -1167,7 +1166,7 @@ __parse_connection(TfwHttpMsg *hm, unsigned char *data, size_t len)
 
 			parser->hbh_parser.spec |= 0x1 << hid;
 			if (!TFW_STR_EMPTY(&msg->h_tbl->tbl[hid]))
-				msg->h_tbl->tbl[hid].flags |= TFW_STR_HBH_HDR;
+				msg->h_tbl->tbl[hid].flags |= TFW_STR_F_HBH_HDR;
 			})
 		TRY_STR_INIT();
 		__FSM_I_MOVE_n(I_ConnOther, 0);
@@ -2063,14 +2062,15 @@ __req_parse_cookie(TfwHttpMsg *hm, unsigned char *data, size_t len)
 	__FSM_START(parser->_i_st) {
 
 	__FSM_STATE(Req_I_CookieStart) {
-		__FSM_I_MATCH_MOVE_fixup(token, Req_I_CookieName, TFW_STR_NAME);
+		__FSM_I_MATCH_MOVE_fixup(token, Req_I_CookieName,
+					 TFW_STR_F_NAME);
 		/*
 		 * Name should contain at least 1 character.
 		 * Store "=" with cookie parameter name.
 		 */
 		if (likely(__fsm_sz && *(p + __fsm_sz) == '='))
 			__FSM_I_MOVE_fixup(Req_I_CookieVal, __fsm_sz + 1,
-					   TFW_STR_NAME);
+					   TFW_STR_F_NAME);
 		return CSTR_NEQ;
 	}
 
@@ -2079,11 +2079,13 @@ __req_parse_cookie(TfwHttpMsg *hm, unsigned char *data, size_t len)
 	 * cookie-name and now we can pass zero length token.
 	 */
 	__FSM_STATE(Req_I_CookieName) {
-		__FSM_I_MATCH_MOVE_fixup(token, Req_I_CookieName, TFW_STR_NAME);
+		__FSM_I_MATCH_MOVE_fixup(token, Req_I_CookieName,
+					 TFW_STR_F_NAME);
 		if (*(p + __fsm_sz) != '=')
 			return CSTR_NEQ;
 		/* Store "=" with cookie parameter name. */
-		__FSM_I_MOVE_fixup(Req_I_CookieVal, __fsm_sz + 1, TFW_STR_NAME);
+		__FSM_I_MOVE_fixup(Req_I_CookieVal, __fsm_sz + 1,
+				   TFW_STR_F_NAME);
 	}
 
 	/*
@@ -2091,13 +2093,14 @@ __req_parse_cookie(TfwHttpMsg *hm, unsigned char *data, size_t len)
 	 * in separate TfwStr chunk.
 	 */
 	__FSM_STATE(Req_I_CookieVal) {
-		__FSM_I_MATCH_MOVE_fixup(cookie, Req_I_CookieVal, TFW_STR_VALUE);
+		__FSM_I_MATCH_MOVE_fixup(cookie, Req_I_CookieVal,
+					 TFW_STR_F_VALUE);
 		c = *(p + __fsm_sz);
 		if (c == ';') {
 			if (likely(__fsm_sz)) {
 				/* Save cookie-value w/o ';'. */
 				__msg_hdr_chunk_fixup(p, __fsm_sz);
-				__FSM_I_chunk_flags(TFW_STR_VALUE);
+				__FSM_I_chunk_flags(TFW_STR_F_VALUE);
 			}
 			__FSM_I_MOVE_n(Req_I_CookieSemicolon, __fsm_sz);
 		}
@@ -2105,7 +2108,7 @@ __req_parse_cookie(TfwHttpMsg *hm, unsigned char *data, size_t len)
 			/* End of cookie header. Do not save OWS. */
 			if (likely(__fsm_sz)) {
 				__msg_hdr_chunk_fixup(p, __fsm_sz);
-				__FSM_I_chunk_flags(TFW_STR_VALUE);
+				__FSM_I_chunk_flags(TFW_STR_F_VALUE);
 			}
 			return __data_off(p + __fsm_sz);
 		}
@@ -2160,7 +2163,7 @@ __parse_etag(TfwHttpMsg *hm, unsigned char *data, size_t len)
 
 	/*
 	 * ETag value and closing DQUOTE is placed into separate chunks marked
-	 * with flags TFW_STR_VALUE and TFW_STR_ETAG_WEAK (optionaly).
+	 * with flags TFW_STR_F_VALUE and TFW_STR_F_ETAG_WEAK (optionaly).
 	 * Closing DQUOTE is used to support empty Etags. Opening is not added
 	 * to simplify usage of tfw_stricmpspn()
 	 *
@@ -2208,7 +2211,7 @@ __parse_etag(TfwHttpMsg *hm, unsigned char *data, size_t len)
 	 * compound string.
 	 */
 	__FSM_STATE(I_Etag_Weak) {
-		parser->hdr.flags |= TFW_STR_ETAG_WEAK;
+		parser->hdr.flags |= TFW_STR_F_ETAG_WEAK;
 		__FSM_JMP(I_Etag_Val);
 	}
 
@@ -2217,14 +2220,14 @@ __parse_etag(TfwHttpMsg *hm, unsigned char *data, size_t len)
 	 * in separate TfwStr chunk.
 	 */
 	__FSM_STATE(I_Etag_Val) {
-		weak = parser->hdr.flags & TFW_STR_ETAG_WEAK;
+		weak = parser->hdr.flags & TFW_STR_F_ETAG_WEAK;
 		__FSM_I_MATCH_MOVE_fixup(token, I_Etag_Val,
-					 (TFW_STR_VALUE | weak));
+					 (TFW_STR_F_VALUE | weak));
 		c = *(p + __fsm_sz);
 		if (likely(c == '"')) {
-			parser->hdr.flags &= ~TFW_STR_ETAG_WEAK;
+			parser->hdr.flags &= ~TFW_STR_F_ETAG_WEAK;
 			__FSM_I_MOVE_fixup(I_EoT, __fsm_sz + 1,
-					   TFW_STR_VALUE | weak);
+					   TFW_STR_F_VALUE | weak);
 		}
 		return CSTR_NEQ;
 	}
@@ -3117,7 +3120,7 @@ tfw_http_parse_req(void *req_data, unsigned char *data, size_t len)
 			 */
 			TFW_DBG3("Handling http:///path\n");
 			tfw_http_msg_set_str_data(msg, &req->host, p);
-			req->host.flags |= TFW_STR_COMPLETE;
+			req->host.flags |= TFW_STR_F_COMPLETE;
 			__FSM_MOVE_f(Req_UriAbsPath, &req->uri_path);
 		} else if (c == '[') {
 			__msg_field_open(&req->host, p);
@@ -4236,8 +4239,8 @@ tfw_http_parse_terminate(TfwHttpMsg *hm)
 		size_t digs;
 		int r;
 
-		BUG_ON(hm->body.flags & TFW_STR_COMPLETE);
-		hm->body.flags |= TFW_STR_COMPLETE;
+		BUG_ON(hm->body.flags & TFW_STR_F_COMPLETE);
+		hm->body.flags |= TFW_STR_F_COMPLETE;
 		hm->content_length = hm->body.len;
 		if (!(digs = tfw_ultoa(hm->content_length, c_len,
 				       TFW_ULTOA_BUF_SIZ)))

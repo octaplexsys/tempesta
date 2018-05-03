@@ -798,7 +798,7 @@ frang_http_req_process(FrangAcc *ra, TfwConn *conn, const TfwFsmData *data)
 	__FRANG_FSM_STATE(Frang_Req_Hdr_UriLen) {
 		if (frang_cfg.http_uri_len) {
 			r = frang_http_uri_len(req, ra);
-			if (!(req->uri_path.flags & TFW_STR_COMPLETE))
+			if (!(req->uri_path.flags & TFW_STR_F_COMPLETE))
 				__FRANG_FSM_JUMP_EXIT(Frang_Req_Hdr_UriLen);
 		}
 		__FRANG_FSM_MOVE(Frang_Req_Hdr_FieldDup);
@@ -826,7 +826,7 @@ frang_http_req_process(FrangAcc *ra, TfwConn *conn, const TfwFsmData *data)
 	 * If not, continue checks on header fields.
 	 */
 	__FRANG_FSM_STATE(Frang_Req_Hdr_Crlf) {
-		if (req->crlf.flags & TFW_STR_COMPLETE)
+		if (req->crlf.flags & TFW_STR_F_COMPLETE)
 			__FRANG_FSM_JUMP(Frang_Req_Hdr_FieldLenFinal);
 		__FRANG_FSM_JUMP_EXIT(Frang_Req_Hdr_FieldDup);
 	}

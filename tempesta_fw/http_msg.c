@@ -283,7 +283,7 @@ tfw_http_msg_hdr_lookup(TfwHttpMsg *hm, const TfwStr *hdr)
 	for (id = TFW_HTTP_HDR_RAW; id < ht->off; ++id) {
 		TfwStr *h = &ht->tbl[id];
 		/* There is no sense to compare against all duplicates. */
-		if (h->flags & TFW_STR_DUPLICATE)
+		if (h->flags & TFW_STR_F_DUPLICATE)
 			h = TFW_STR_CHUNK(h, 0);
 		if (!tfw_stricmpspn(hdr, h, ':'))
 			break;
@@ -337,11 +337,11 @@ tfw_http_msg_hdr_close(TfwHttpMsg *hm, unsigned int id)
 	TfwStr *h;
 	TfwHttpHdrTbl *ht = hm->h_tbl;
 
-	BUG_ON(hm->parser.hdr.flags & TFW_STR_DUPLICATE);
+	BUG_ON(hm->parser.hdr.flags & TFW_STR_F_DUPLICATE);
 	BUG_ON(id > TFW_HTTP_HDR_RAW);
 
 	/* Close just parsed header. */
-	hm->parser.hdr.flags |= TFW_STR_COMPLETE;
+	hm->parser.hdr.flags |= TFW_STR_F_COMPLETE;
 
 	/* Quick path for special headers. */
 	if (likely(id < TFW_HTTP_HDR_RAW)) {
@@ -426,7 +426,7 @@ int
 __tfw_http_msg_add_str_data(TfwHttpMsg *hm, TfwStr *str, void *data,
 			    size_t len, struct sk_buff *skb)
 {
-	BUG_ON(str->flags & (TFW_STR_DUPLICATE | TFW_STR_COMPLETE));
+	BUG_ON(str->flags & (TFW_STR_F_DUPLICATE | TFW_STR_F_COMPLETE));
 
 	TFW_DBG3("store field chunk len=%lu data=%p(%c) field=<%#x,%lu,%p>\n",
 		 len, data, isprint(*(char *)data) ? *(char *)data : '.',
@@ -728,7 +728,7 @@ tfw_http_msg_del_hbh_hdrs(TfwHttpMsg *hm)
 		hid--;
 		if (hid == TFW_HTTP_HDR_CONNECTION)
 			continue;
-		if (ht->tbl[hid].flags & TFW_STR_HBH_HDR)
+		if (ht->tbl[hid].flags & TFW_STR_F_HBH_HDR)
 			if ((r = __hdr_del(hm, hid)))
 				return r;
 	} while (hid);

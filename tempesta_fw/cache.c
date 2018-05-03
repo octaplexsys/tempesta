@@ -122,7 +122,7 @@ typedef struct {
 /**
  * String header for cache entries used for TfwStr serialization.
  *
- * @flags	- only TFW_STR_DUPLICATE or zero;
+ * @flags	- only TFW_STR_F_DUPLICATE or zero;
  * @len		- string length or number of duplicates;
  */
 typedef struct {
@@ -582,7 +582,7 @@ tfw_cache_build_resp_hdr(TDB *db, TfwHttpResp *resp, TfwStr *hdr,
 	*p += TFW_CSTR_HDRLEN;
 	BUG_ON(*p > (*trec)->data + (*trec)->len);
 
-	if (likely(!(s->flags & TFW_STR_DUPLICATE)))
+	if (likely(!(s->flags & TFW_STR_F_DUPLICATE)))
 		return tfw_cache_write_field(db, trec, resp, it, p, s->len,
 					     hdr);
 
@@ -605,7 +605,7 @@ tfw_cache_build_resp_hdr(TDB *db, TfwHttpResp *resp, TfwStr *hdr,
 	if (hdr) {
 		hdr->ptr = dups;
 		__TFW_STR_CHUNKN_SET(hdr, dn);
-		hdr->flags |= TFW_STR_DUPLICATE;
+		hdr->flags |= TFW_STR_F_DUPLICATE;
 	}
 
 	return 0;
@@ -831,7 +831,7 @@ tfw_cache_str_write_hdr(const TfwStr *str, char *p)
 	TfwCStr *s = (TfwCStr *)p;
 
 	if (TFW_STR_DUP(str)) {
-		s->flags = TFW_STR_DUPLICATE;
+		s->flags = TFW_STR_F_DUPLICATE;
 		s->len = TFW_STR_CHUNKN(str);
 	} else {
 		s->flags = 0;
@@ -1029,7 +1029,7 @@ __set_etag(TfwCacheEntry *ce, TfwHttpResp *resp, long h_off, TdbVRec *h_trec,
 	TFW_STR_FOR_EACH_CHUNK(c, h, end) {
 		size_t c_size = c->len;
 
-		if (c->flags & TFW_STR_VALUE)
+		if (c->flags & TFW_STR_F_VALUE)
 			break;
 		while (c_size) {
 			size_t tail = h_trec->len - (e_p - h_trec->data);
@@ -1044,7 +1044,7 @@ __set_etag(TfwCacheEntry *ce, TfwHttpResp *resp, long h_off, TdbVRec *h_trec,
 			}
 		}
 	}
-	for ( ; (c < end) && (c->flags & TFW_STR_VALUE); ++c)
+	for ( ; (c < end) && (c->flags & TFW_STR_F_VALUE); ++c)
 		len += c->len;
 
 	/* Create TfWStr that contains only entity-tag value. */
@@ -1178,7 +1178,7 @@ tfw_cache_copy_resp(TfwCacheEntry *ce, TfwHttpResp *resp, size_t tot_len)
 		bool hdr_304 = false;
 
 		/* Skip hop-by-hop headers. */
-		if (!(field->flags & TFW_STR_HBH_HDR)) {
+		if (!(field->flags & TFW_STR_F_HBH_HDR)) {
 			h = field;
 		} else if (field - resp->h_tbl->tbl < TFW_HTTP_HDR_RAW) {
 			h = &empty;
@@ -1273,7 +1273,7 @@ __cache_entry_size(TfwHttpResp *resp)
 	/* Add all the headers size */
 	FOR_EACH_HDR_FIELD(hdr, hdr_end, resp) {
 		/* Skip hop-by-hop headers. */
-		if (!(hdr->flags & TFW_STR_HBH_HDR))
+		if (!(hdr->flags & TFW_STR_F_HBH_HDR))
 			h = hdr;
 		else if (hdr - resp->h_tbl->tbl < TFW_HTTP_HDR_RAW)
 			h = &empty;
