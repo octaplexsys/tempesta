@@ -662,10 +662,13 @@ tfw_http_req_init_ss_flags(TfwSrvConn *srv_conn, TfwHttpReq *req)
 }
 
 static inline void
-tfw_http_resp_init_ss_flags(TfwHttpResp *resp, const TfwHttpReq *req)
+tfw_http_resp_init_ss_flags(TfwHttpResp *resp)
 {
-	if (req->flags & (TFW_HTTP_F_CONN_CLOSE | TFW_HTTP_F_SUSPECTED))
+	if ((resp->req->flags & (TFW_HTTP_F_CONN_CLOSE | TFW_HTTP_F_SUSPECTED))
+	    || (resp->flags & TFW_HTTP_F_CONN_CLOSE))
+	{
 		((TfwMsg *)resp)->ss_flags |= SS_F_CONN_CLOSE;
+	}
 }
 
 /*
@@ -675,6 +678,15 @@ static inline bool
 tfw_http_req_is_nip(TfwHttpReq *req)
 {
 	return (req->flags & TFW_HTTP_F_NON_IDEMP);
+}
+
+/*
+ * Check if a message is processed in stream mode.
+ */
+static inline bool
+__tfw_http_msg_is_streamed(TfwHttpMsg *msg)
+{
+	return (msg->flags & TFW_HTTP_F_MSG_STREAM);
 }
 
 /*
@@ -1615,7 +1627,7 @@ tfw_http_req_destruct(void *msg)
  * to and kept in @fwd_queue of the connection @conn for that server.
  * If a paired request is not found, then the response must be deleted.
  *
- * If a paired client request is missing, then it seems upsream server
+ * If a paired client request is missing, then it seems upstream server
  * is misbehaving, so the caller has to drop the server connection.
  *
  * Correct response parsing is only possible when request properties,
@@ -1644,7 +1656,6 @@ tfw_http_resp_pair(TfwHttpMsg *hmresp)
 	spin_unlock(&srv_conn->fwd_qlock);
 
 	TFW_WARN("Paired request missing, HTTP Response Splitting attack?\n");
-	TFW_INC_STAT_BH(serv.msgs_otherr);
 
 	return -EINVAL;
 }
@@ -1860,28 +1871,16 @@ tfw_http_conn_send(TfwConn *conn, TfwMsg *msg)
  * Siblings in HTTP are pipelined HTTP messages that share the same SKB.
  */
 static TfwHttpMsg *
-tfw_http_msg_create_sibling(TfwHttpMsg *hm, struct sk_buff **skb,
-			    unsigned int split_offset)
+tfw_http_msg_create_sibling(TfwHttpMsg *hm)
 {
 	TfwHttpMsg *shm;
-	struct sk_buff *nskb;
 
-	TFW_DBG2("Create sibling message: conn %p, skb %p\n", hm->conn, skb);
+	TFW_DBG2("Create sibling message: conn %p\n", hm->conn);
 
 	/* The sibling message belongs to the same connection. */
 	shm = (TfwHttpMsg *)tfw_http_conn_msg_alloc(hm->conn);
-	if (unlikely(!shm)) {
-		/*
-		 * Split skb to proceed with current message @hm, or rest of
-		 * data in this connection will be attached to the message.
-		 * Don't care about client connection, it must be closed and
-		 * request @hm is to be destroyed and won't be forwarded to
-		 * backend server.
-		 */
-		if (TFW_CONN_TYPE(hm->conn) & Conn_Srv)
-			*skb = ss_skb_split(*skb, split_offset);
+	if (unlikely(!shm))
 		return NULL;
-	}
 
 	/*
 	 * New message created, so it should be in whitelist if
@@ -1889,20 +1888,6 @@ tfw_http_msg_create_sibling(TfwHttpMsg *hm, struct sk_buff **skb,
 	 */
 	if (TFW_CONN_TYPE(hm->conn) & Conn_Clnt)
 		shm->flags |= hm->flags & TFW_HTTP_F_WHITELIST;
-
-	/*
-	 * The sibling message is set up to start with a new SKB.
-	 * The new SKB is split off from the original SKB and has
-	 * the first part of the new message. The original SKB is
-	 * shrunk to have just data from the original message.
-	 */
-	nskb = ss_skb_split(*skb, split_offset);
-	if (!nskb) {
-		tfw_http_conn_msg_free(shm);
-		return NULL;
-	}
-	ss_skb_queue_tail(&shm->msg.skb_head, nskb);
-	*skb = nskb;
 
 	return shm;
 }
@@ -2041,7 +2026,7 @@ tfw_http_add_x_forwarded_for(TfwHttpMsg *hm)
 	int r;
 	char *p, *buf = *this_cpu_ptr(&g_buf);
 
-	p = ss_skb_fmt_src_addr(hm->msg.skb_head, buf);
+	p = ss_skb_fmt_src_addr(hm->msg.head_skb, buf);
 
 	r = tfw_http_msg_hdr_xfrm(hm, "X-Forwarded-For",
 				  sizeof("X-Forwarded-For") - 1, buf, p - buf,
@@ -2179,7 +2164,7 @@ __tfw_http_resp_fwd(TfwCliConn *cli_conn, struct list_head *ret_queue)
 
 	list_for_each_entry_safe(req, tmp, ret_queue, msg.seq_list) {
 		BUG_ON(!req->resp);
-		tfw_http_resp_init_ss_flags(req->resp, req);
+		tfw_http_resp_init_ss_flags(req->resp);
 		if (tfw_cli_conn_send(cli_conn, (TfwMsg *)req->resp)) {
 			ss_close_sync(cli_conn->sk, true);
 			return;
@@ -2307,10 +2292,12 @@ tfw_http_req_mark_error(TfwHttpReq *req, int status)
  * manner to delay its closing until transmission of error response
  * will be finished.
  */
-static void
+static int
 tfw_http_cli_error_resp_and_log(bool reply, bool nolog, TfwHttpReq *req,
 				int status, const char *msg)
 {
+	int r = TFW_BLOCK;
+
 	if (!nolog)
 		TFW_WARN_ADDR(msg, &req->conn->peer->addr);
 
@@ -2321,23 +2308,45 @@ tfw_http_cli_error_resp_and_log(bool reply, bool nolog, TfwHttpReq *req,
 		list_add_tail(&req->msg.seq_list, &cli_conn->seq_queue);
 		spin_unlock(&cli_conn->seq_qlock);
 		tfw_http_req_mark_error(req, status);
+		/*
+		 * Error message may not be sent immediately, some requests
+		 * in seq_queue may still wait for response from backend.
+		 * Close the connection when response to @req will be sent,
+		 * not earlier.
+		 */
+		r = TFW_PASS;
 	}
 	else {
 		tfw_http_conn_req_clean(req);
 	}
+
+	return r;
 }
 
-static void
+static int
 tfw_http_srv_error_resp_and_log(bool reply, bool nolog, TfwHttpReq *req,
 				int status, const char *msg)
 {
+	int r = TFW_BLOCK;
+
 	if (!nolog)
 		TFW_WARN_ADDR(msg, &req->conn->peer->addr);
 
-	if (reply)
+	if (reply) {
 		tfw_http_req_mark_error(req, status);
-	else
+		/*
+		 * Error message may not be sent immediately, some requests
+		 * in seq_queue may still wait for response from backend.
+		 * Close the connection when response to @req will be sent,
+		 * not earlier.
+		 */
+		r = TFW_PASS;
+	}
+	else {
 		tfw_http_conn_req_clean(req);
+	}
+
+	return r;
 }
 
 /**
@@ -2351,36 +2360,40 @@ tfw_http_srv_error_resp_and_log(bool reply, bool nolog, TfwHttpReq *req,
  * Otherwise tfw_srv_client_drop() and tfw_srv_client_block() must be used
  * only from server connection context.
  */
-static inline void
+static inline int
 tfw_client_drop(TfwHttpReq *req, int status, const char *msg)
 {
-	tfw_http_cli_error_resp_and_log(tfw_blk_flags & TFW_BLK_ERR_REPLY,
-					tfw_blk_flags & TFW_BLK_ERR_NOLOG,
-					req, status, msg);
+	return tfw_http_cli_error_resp_and_log(
+				tfw_blk_flags & TFW_BLK_ERR_REPLY,
+				tfw_blk_flags & TFW_BLK_ERR_NOLOG,
+				req, status, msg);
 }
 
-static inline void
+static inline int
 tfw_client_block(TfwHttpReq *req, int status, const char *msg)
 {
-	tfw_http_cli_error_resp_and_log(tfw_blk_flags & TFW_BLK_ATT_REPLY,
-					tfw_blk_flags & TFW_BLK_ATT_NOLOG,
-					req, status, msg);
+	return tfw_http_cli_error_resp_and_log(
+				tfw_blk_flags & TFW_BLK_ATT_REPLY,
+				tfw_blk_flags & TFW_BLK_ATT_NOLOG,
+				req, status, msg);
 }
 
-static inline void
+static inline int
 tfw_srv_client_drop(TfwHttpReq *req, int status, const char *msg)
 {
-	tfw_http_srv_error_resp_and_log(tfw_blk_flags & TFW_BLK_ERR_REPLY,
-					tfw_blk_flags & TFW_BLK_ERR_NOLOG,
-					req, status, msg);
+	return tfw_http_srv_error_resp_and_log(
+				tfw_blk_flags & TFW_BLK_ERR_REPLY,
+				tfw_blk_flags & TFW_BLK_ERR_NOLOG,
+				req, status, msg);
 }
 
-static inline void
+static inline int
 tfw_srv_client_block(TfwHttpReq *req, int status, const char *msg)
 {
-	tfw_http_srv_error_resp_and_log(tfw_blk_flags &	TFW_BLK_ATT_REPLY,
-					tfw_blk_flags & TFW_BLK_ATT_NOLOG,
-					req, status, msg);
+	return tfw_http_srv_error_resp_and_log(
+				tfw_blk_flags & TFW_BLK_ATT_REPLY,
+				tfw_blk_flags & TFW_BLK_ATT_NOLOG,
+				req, status, msg);
 }
 
 /**
@@ -2619,9 +2632,228 @@ tfw_http_hm_drop_resp(TfwHttpResp *resp)
 	tfw_http_msg_free((TfwHttpMsg *)req);
 }
 
+static void
+tfw_http_skb_queue(TfwHttpMsg *hm, struct sk_buff *skb,
+		   tfw_http_parse_stage_t stage)
+{
+	if (!__tfw_http_msg_is_streamed(hm)) {
+		ss_skb_queue_tail(&hm->msg.head_skb, skb);
+		return;
+	}
+
+	spin_lock(&hm->msg.stream_lock);
+
+	switch (stage)
+	{
+	case TFW_HTTP_PARSE_HEADERS:
+		ss_skb_queue_tail(&hm->msg.head_skb, skb);
+		break;
+	case TFW_HTTP_PARSE_BODY:
+		/*
+		 * Only messages with unknown message length are transformed
+		 * to chunked. Such messages are always streamed, and body
+		 * data is never in list of buffered skb.
+		 */
+		ss_skb_queue_tail(&hm->msg.body_skb, skb);
+		if (hm->flags & TFW_HTTP_F_CHUNKED_TRANSFORM)
+			tfw_http_msg_to_chunked(hm);
+		break;
+	case TFW_HTTP_PARSE_TRAILER:
+		ss_skb_queue_tail(&hm->msg.trailer_skb, skb);
+		break;
+	default:
+		BUG();
+	}
+
+	spin_unlock(&hm->msg.stream_lock);
+}
+
+static int
+tfw_http_stream_req(TfwHttpReq *req)
+{
+	int r = 0;
+
+	return r;
+}
+
+/**
+ * Parse and add a new skb into current message.
+ *
+ * Before the call @skb is not attached to the message. If parsing succeed,
+ * @skb is either attached to the message and @skb pointer is set to NULL;
+ * or it's split into two parts, first is attached to the message, second is
+ * returned in @skb pointer.
+ */
+static int
+tfw_http_parse_skb(TfwConn *conn, struct sk_buff **skb, unsigned int *off,
+		   TfwFsmData *data_up)
+{
+	TfwHttpMsg *hm = (TfwHttpMsg *)conn->msg;
+	TfwHttpParser *parser = &hm->parser;
+	bool client = TFW_CONN_TYPE(conn) & Conn_Clnt;
+	ss_skb_actor_t actor = client ? tfw_http_parse_req : tfw_http_parse_resp;
+	tfw_http_parse_stage_t stage;
+	unsigned int data_off;
+	size_t to_read;
+	int r = TFW_BLOCK;
+
+repeat:
+	if (likely(tfw_cfg_proxy_buff_sz > hm->msg.len))
+		to_read = tfw_cfg_proxy_buff_sz - hm->msg.len;
+	else
+		to_read = ULONG_MAX;
+
+	/*
+	 * Process/parse data in the SKB.
+	 * @data_off points at the start of data for processing.
+	 * @off is the current offset of data to process in
+	 * the SKB. After processing @off points at the end
+	 * of latest data chunk. However processing may have
+	 * stopped in the middle of the chunk. Adjust it to point
+	 * to the right location within the chunk.
+	 */
+	stage = tfw_http_parse_stage(hm);
+	parser->skb = *skb;
+	data_off = *off;
+	r = ss_skb_process(*skb, off, to_read, actor, hm);
+	*off -= parser->to_go;
+	hm->msg.len += *off - data_off;
+	parser->skb = NULL;
+
+	if (client)
+		TFW_ADD_STAT_BH(*off - data_off, clnt.rx_bytes);
+	else
+		TFW_ADD_STAT_BH(*off - data_off, serv.rx_bytes);
+	TFW_DBG2("%s parsed: remain_len=%u parsed=%u msg_len=%zu"
+		 " ver=%d res=%d\n",
+		 (client ? "Request" : "Response"), (*skb)->len - *off,
+		 *off - data_off, hm->msg.len, hm->version, r);
+
+	if (unlikely(r == TFW_BLOCK))
+		return TFW_BLOCK;
+	if (hm->msg.len >= tfw_cfg_proxy_buff_sz)
+		hm->flags |= TFW_HTTP_F_MSG_STREAM;
+
+	/*
+	 * We have to keep @data the same to pass it as is to FSMs
+	 * registered with lower priorities after us, but we must
+	 * feed the new data version to FSMs registered on our states.
+	 */
+	data_up->skb = *skb;
+	data_up->off = data_off;
+	if (client) {
+		data_up->req = (TfwMsg *)hm;
+		data_up->resp = NULL;
+	}
+	else {
+		data_up->req = (TfwMsg *)hm->pair;
+		data_up->resp = (TfwMsg *)hm;
+	}
+
+	if (*off < (*skb)->len) {
+		struct sk_buff *nskb;
+		/*
+		 * Too long headers may overflow buffering limit. Don't split
+		 * skb until all the headers are processed.
+		 */
+		if (unlikely(tfw_http_parse_stage(hm) == TFW_HTTP_PARSE_HEADERS))
+			goto repeat;
+
+		TFW_DBG2("Split skb %p and add to message %p\n", *skb, hm);
+		tfw_http_skb_queue(hm, *skb, stage);
+		nskb = ss_skb_split(*skb, *off);
+		if (!nskb) {
+			*skb = NULL;
+			return TFW_BLOCK;
+		}
+		*skb = nskb;
+		*off = 0;
+	}
+	else {
+		TFW_DBG2("Add skb %p to message %p\n", *skb, hm);
+		tfw_http_skb_queue(hm, *skb, stage);
+		*skb = NULL;
+	}
+
+	return r;
+}
+
+enum {
+	/* A new message is received. */
+	Http_Msg_0 = 0,
+	/* Buffer the message before processing. */
+	Http_Msg_Buffer,
+	/* Process headers. */
+	Http_Msg_Headers,
+	/* Forward message. */
+	Http_Msg_Fwd,
+	/* Stream message. */
+	Http_Msg_Stream,
+	/* Send response and drop connection if applicable. */
+	Http_Msg_Conn_Drop,
+	/* Message is fully received. */
+	Http_Msg_Done,
+};
+#if defined(DEBUG) && (DEBUG >= 2)
+const char *__state_name_array[] = {
+	"Http_Msg_0",
+
+	"Http_Msg_Buffer",
+	"Http_Msg_Headers",
+	"Http_Msg_Fwd",
+	"Http_Msg_Stream",
+	"Http_Msg_Conn_Drop",
+
+	"Http_Msg_Done",
+};
+
+#define __state_name(state) ((state >= 0 && state <= Http_Msg_Done) ?	\
+				__state_name_array[state] :		\
+				"Wrong state")
+#endif /* defined(DEBUG) && (DEBUG >= 3) */
+
+#define __HTTP_FSM_INIT()						\
+int __fsm_const_state = Http_Msg_0; /* make compiler happy */
+
+#define __HTTP_FSM_START(st)						\
+switch(st)
+
+/* NOTE: we use the fact, that if DEBUG < 3, TFW_DBG3() is empty, so
+ * we can use it with undefined arguments, such as
+ * __state_name(__fsm_const_state), which is defined only when DEBUG >= 3
+ */
+#define __HTTP_FSM_FINISH(msg)						\
+done:									\
+	TFW_DBG2("Finish HTTP FSM at state %d = %s\n",			\
+		__fsm_const_state, __state_name(__fsm_const_state));	\
+	TFW_DBG2("HTTP return %s\n", r == TFW_PASS ? "PASS" : "BLOCK");\
+	(msg)->state.st = __fsm_const_state;
+
+#define __HTTP_FSM_STATE(st)						\
+case st:								\
+st: __attribute__((unused))						\
+	TFW_DBG2("enter HTTP FSM at state %d = %s\n", st, __state_name(st));\
+	__fsm_const_state = st; /* optimized out to constant */
+
+#define __HTTP_FSM_EXIT()	goto done;
+
+#define __HTTP_FSM_JUMP(to)	goto to;
+#define __HTTP_FSM_MOVE(to)						\
+do {									\
+	if (r)								\
+		__HTTP_FSM_EXIT();					\
+	goto to;							\
+} while (0)
+
+#define __HTTP_FSM_JUMP_EXIT(to)					\
+do {									\
+	__fsm_const_state = to; /* optimized out to constant */		\
+	__HTTP_FSM_EXIT();						\
+} while (0)
+
+
 /**
  * @return zero on success and negative value otherwise.
- * TODO enter the function depending on current GFSM state.
  */
 static int
 tfw_http_req_process(TfwConn *conn, const TfwFsmData *data)
@@ -2629,103 +2861,85 @@ tfw_http_req_process(TfwConn *conn, const TfwFsmData *data)
 	int r = TFW_BLOCK;
 	struct sk_buff *skb = data->skb;
 	unsigned int off = data->off;
-	unsigned int data_off = off;
-	unsigned int skb_len = skb->len;
 	TfwFsmData data_up;
+	TfwHttpReq *req;
+	TfwHttpMsg *hmreq, *hmsib = NULL;
+	bool stream_mode;
+	__HTTP_FSM_INIT();
 
 	BUG_ON(!conn->msg);
-	BUG_ON(data_off >= skb_len);
+	BUG_ON(off >= skb->len);
 
 	TFW_DBG2("Received %u client data bytes on conn=%p msg=%p\n",
-		 skb_len - off, conn, conn->msg);
+		 skb->len - off, conn, conn->msg);
 
 	/*
-	 * Process pipelined requests in a loop
-	 * until all data in the SKB is processed.
+	 * Process pipelined requests in a loop until all data in the SKB
+	 * is processed.
 	 */
-	while (data_off < skb_len) {
-		int req_conn_close;
-		TfwHttpMsg *hmsib = NULL;
-		TfwHttpReq *req = (TfwHttpReq *)conn->msg;
-		TfwHttpParser *parser = &req->parser;
-
-		/*
-		 * Process/parse data in the SKB.
-		 * @off points at the start of data for processing.
-		 * @data_off is the current offset of data to process in
-		 * the SKB. After processing @data_off points at the end
-		 * of latest data chunk. However processing may have
-		 * stopped in the middle of the chunk. Adjust it to point
-		 * to the right location within the chunk.
-		 */
-		off = data_off;
-		r = ss_skb_process(skb, &data_off, tfw_http_parse_req, req);
-		data_off -= parser->to_go;
-		req->msg.len += data_off - off;
-		TFW_ADD_STAT_BH(data_off - off, clnt.rx_bytes);
-
-		TFW_DBG2("Request parsed: len=%u parsed=%d msg_len=%lu"
-			 " ver=%d res=%d\n",
-			 skb_len - off, data_off - off, req->msg.len,
-			 req->version, r);
-
-		/*
-		 * We have to keep @data the same to pass it as is to FSMs
-		 * registered with lower priorities after us, but we must
-		 * feed the new data version to FSMs registered on our states.
-		 */
-		data_up.skb = skb;
-		data_up.off = off;
-		data_up.req = (TfwMsg *)req;
-		data_up.resp = NULL;
-
+next_req:
+	req = (TfwHttpReq *)conn->msg;
+	hmreq = (TfwHttpMsg *)conn->msg;
+	/* Process one message. */
+	while (skb && (r != TFW_PASS)) {
+		r = tfw_http_parse_skb(conn, &skb, &off, &data_up);
 		switch (r) {
 		default:
-			TFW_ERR("Unrecognized HTTP request "
-				"parser return code, %d\n", r);
+			TFW_ERR("Unrecognized HTTP request parser return code "
+				"%d\n", r);
 			BUG();
 		case TFW_BLOCK:
 			TFW_DBG2("Block invalid HTTP request\n");
 			TFW_INC_STAT_BH(clnt.msgs_parserr);
-			tfw_client_drop(req, 400, "failed to parse request");
-			return TFW_BLOCK;
+			r = tfw_client_drop(req, 400, "failed to parse request");
+			goto err;
+
+		case TFW_SPLIT:
 		case TFW_POSTPONE:
 			r = tfw_gfsm_move(&conn->state, TFW_HTTP_FSM_REQ_CHUNK,
 					  &data_up);
 			TFW_DBG3("TFW_HTTP_FSM_REQ_CHUNK return code %d\n", r);
-			if (r == TFW_BLOCK) {
-				TFW_INC_STAT_BH(clnt.msgs_filtout);
-				tfw_client_block(req, 403, "postponed"
-					       " request has been"
-					       " filtered out");
-				return TFW_BLOCK;
-			}
-			/*
-			 * TFW_POSTPONE status means that parsing succeeded
-			 * but more data is needed to complete it. Lower layers
-			 * just supply data for parsing. They only want to know
-			 * if processing of a message should continue or not.
-			 */
-			return TFW_PASS;
+			if (r != TFW_BLOCK)
+				break;
+
+			TFW_INC_STAT_BH(clnt.msgs_filtout);
+			r = tfw_client_block(
+				req, 403,
+				"postponed request has been filtered out");
+			goto err;
+
 		case TFW_PASS:
-			/*
-			 * The request is fully parsed,
-			 * fall through and process it.
-			 */
 			BUG_ON(!(req->flags & TFW_HTTP_F_CHUNKED)
 			       && (req->content_length != req->body.len));
-		}
 
-		r = tfw_gfsm_move(&conn->state, TFW_HTTP_FSM_REQ_MSG, &data_up);
-		TFW_DBG3("TFW_HTTP_FSM_REQ_MSG return code %d\n", r);
-		/* Don't accept any following requests from the peer. */
-		if (r == TFW_BLOCK) {
+			r = tfw_gfsm_move(&conn->state, TFW_HTTP_FSM_REQ_MSG,
+					  &data_up);
+			TFW_DBG3("TFW_HTTP_FSM_REQ_MSG return code %d\n", r);
+			if (r != TFW_BLOCK)
+				break;
+
 			TFW_INC_STAT_BH(clnt.msgs_filtout);
-			tfw_client_block(req, 403, "parsed request"
-				       " has been filtered out");
-			return TFW_BLOCK;
-		}
+			r = tfw_client_block(
+				req, 403,
+				"parsed request has been filtered out");
+			goto err;
 
+		}
+	}
+	stream_mode = __tfw_http_msg_is_streamed(hmreq);
+
+	/*
+	 * Message is not streamed and not parsed fully, don't wait time on fsm.
+	 */
+	if (!stream_mode && (r == TFW_POSTPONE))
+		return TFW_PASS;
+
+
+	/* At least part of request is parsed. */
+	__HTTP_FSM_START(req->state.st) {
+
+	/* A new request is received . */
+	__HTTP_FSM_STATE(Http_Msg_0) {
 		/*
 		 * The time the request was received is used for age
 		 * calculations in cache, and for eviction purposes.
@@ -2733,14 +2947,26 @@ tfw_http_req_process(TfwConn *conn, const TfwFsmData *data)
 		req->cache_ctl.timestamp = tfw_current_timestamp();
 		req->jrxtstamp = jiffies;
 
-		/* Assign the right Vhost for this request. */
-		if (tfw_http_req_set_context(req)) {
-			TFW_INC_STAT_BH(clnt.msgs_otherr);
-			tfw_client_drop(req, 500, "cannot find"
-				      "Vhost for request");
-			return TFW_BLOCK;
-		}
+		__HTTP_FSM_JUMP(Http_Msg_Buffer);
+	}
 
+	/*
+	 * Buffer message before processing it. Headers must be fully parsed
+	 * before processing the message. Even in stream mode.
+	 */
+	__HTTP_FSM_STATE(Http_Msg_Buffer) {
+		int p_stage = tfw_http_parse_stage(hmreq);
+
+		if ((p_stage == TFW_HTTP_PARSE_DONE) || stream_mode)
+			__HTTP_FSM_JUMP(Http_Msg_Headers);
+		if (p_stage == TFW_HTTP_PARSE_HEADERS)
+			__HTTP_FSM_EXIT();
+
+		__HTTP_FSM_EXIT();
+	}
+
+	/* Headers are fully parsed, message processing can be started. */
+	__HTTP_FSM_STATE(Http_Msg_Headers) {
 		/*
 		 * In HTTP 0.9 the server always closes the connection
 		 * after sending the response.
@@ -2765,6 +2991,43 @@ tfw_http_req_process(TfwConn *conn, const TfwFsmData *data)
 		{
 			req->flags |= TFW_HTTP_F_CONN_CLOSE;
 		}
+		/* Assign the right Vhost for this request. */
+		if (tfw_http_req_set_context(req)) {
+			TFW_INC_STAT_BH(clnt.msgs_otherr);
+			req->httperr.status = 500;
+			req->httperr.reason = "cannot find Vhost for request";
+			__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
+		}
+		if (!stream_mode)
+			__HTTP_FSM_JUMP(Http_Msg_Done);
+		__HTTP_FSM_JUMP(Http_Msg_Fwd);
+	}
+
+	/*
+	 * Error during message processing, send response and close the
+	 * connection.
+	 */
+	__HTTP_FSM_STATE(Http_Msg_Conn_Drop) {
+		/*
+		 * There can be an existing response for the request, but if
+		 * an error occurred it must be dropped.
+		 */
+		tfw_http_msg_free(req->pair);
+		/*
+		 * Close connection immediately or after error response is sent.
+		 */
+		if (list_empty(&req->msg.seq_list))
+			r = tfw_client_drop(req, req->httperr.status,
+					    req->httperr.reason);
+		else
+			r = tfw_srv_client_drop(req, req->httperr.status,
+						req->httperr.reason);
+		__HTTP_FSM_EXIT();
+	}
+
+	/* Message is fully parsed. */
+	__HTTP_FSM_STATE(Http_Msg_Done) {
+		bool req_conn_close;
 
 		/*
 		 * The request has been successfully parsed and processed.
@@ -2782,13 +3045,9 @@ tfw_http_req_process(TfwConn *conn, const TfwFsmData *data)
 		if((req_conn_close = req->flags & TFW_HTTP_F_CONN_CLOSE))
 			TFW_CONN_TYPE(req->conn) |= Conn_Stop;
 
-		if (!req_conn_close && (data_off < skb_len)) {
-			/*
-			 * Pipelined requests: create a new sibling message.
-			 * @skb is replaced with pointer to a new SKB.
-			 */
-			hmsib = tfw_http_msg_create_sibling((TfwHttpMsg *)req,
-							    &skb, data_off);
+		/* Pipelined requests: create a new sibling message. */
+		if (!req_conn_close && skb) {
+			hmsib = tfw_http_msg_create_sibling((TfwHttpMsg *)req);
 			if (unlikely(!hmsib)) {
 				/*
 				 * Unfortunately, there's no recourse. The
@@ -2797,9 +3056,10 @@ tfw_http_req_process(TfwConn *conn, const TfwFsmData *data)
 				 * processed data.
 				 */
 				TFW_INC_STAT_BH(clnt.msgs_otherr);
-				tfw_client_drop(req, 500, "cannot create"
-					      " sibling request");
-				return TFW_BLOCK;
+				req->httperr.status = 500;
+				req->httperr.reason =
+					"cannot create sibling request";
+				__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
 			}
 		}
 
@@ -2815,45 +3075,102 @@ tfw_http_req_process(TfwConn *conn, const TfwFsmData *data)
 		tfw_connection_unlink_msg(conn);
 
 		/*
+		 * Proxy mode: the request is fully buffered and processed,
+		 * forward it to backend or cache. The request must not be
+		 * dereferenced after forwarding.
+		 */
+		if (!stream_mode)
+			__HTTP_FSM_JUMP(Http_Msg_Fwd);
+		/*
+		 * Streaming mode: the request was already forwarded to backend
+		 * or cache, all it's parts was streamed to backend too, no
+		 * more actions required.
+		 */
+		__HTTP_FSM_EXIT();
+	}
+
+	/* Message is fully parsed. */
+	__HTTP_FSM_STATE(Http_Msg_Fwd) {
+		int err = 0;
+
+		/*
 		 * Add the request to the list of the client connection
 		 * to preserve the correct order of responses to requests.
 		 */
 		tfw_http_req_add_seq_queue(req);
 
+		if (unlikely(req->resp))
+			/* Response is already provided for the request. */
+			tfw_http_resp_fwd(req->resp);
+		else
+			err = tfw_cache_process(hmreq, tfw_http_req_cache_cb);
+
 		/*
 		 * The request should either be stored or released.
 		 * Otherwise we lose the reference to it and get a leak.
 		 */
-		if (tfw_cache_process((TfwHttpMsg *)req, tfw_http_req_cache_cb)) {
-			tfw_http_send_resp(req, 500, "request dropped:"
-					   " processing error");
+		if (err) {
 			TFW_INC_STAT_BH(clnt.msgs_otherr);
-			return TFW_PASS;
+			req->httperr.status = 500;
+			req->httperr.reason =
+				"request dropped: processing error";
+			__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
 		}
-
 		/*
-		 * According to RFC 7230 6.3.2, connection with a client
-		 * must be dropped after a response is sent to that client,
-		 * if the client sends "Connection: close" header field in
-		 * the request. Subsequent requests from the client coming
-		 * over the same connection are ignored.
-		 *
 		 * Note: This connection's @conn must not be dereferenced
-		 * from this point on.
+		 * from this point on if TFW_HTTP_F_CONN_CLOSE flag was set
+		 * and the message is not in streaming mode.
 		 */
-		if (req_conn_close)
-			break;
-
-		if (hmsib) {
-			/*
-			 * Switch connection to the new sibling message.
-			 * Data processing will continue with the new SKB.
-			 */
-			data_off = 0;
-			skb_len = skb->len;
-			conn->msg = (TfwMsg *)hmsib;
-		}
+		if (!stream_mode)
+			__HTTP_FSM_EXIT();
+		__HTTP_FSM_JUMP(Http_Msg_Stream);
 	}
+
+	/*
+	 * Stream message parts to backend server or wait until
+	 * the request is fully received to send a response.
+	 */
+	__HTTP_FSM_STATE(Http_Msg_Stream) {
+		int err;
+
+		err = tfw_http_stream_req(req);
+		if (err) {
+			TFW_INC_STAT_BH(clnt.msgs_otherr);
+			req->httperr.status = 500;
+			req->httperr.reason =
+				"request dropped: streaming error";
+			__HTTP_FSM_JUMP(Http_Msg_Conn_Drop);
+		}
+		if (tfw_http_parse_stage(hmreq) != TFW_HTTP_PARSE_DONE)
+			__HTTP_FSM_EXIT();
+		__HTTP_FSM_JUMP(Http_Msg_Done);
+	}
+
+	__HTTP_FSM_FINISH(req);
+	}
+
+	/* Switch connection to the new sibling message. */
+	if (hmsib) {
+		BUG_ON(!skb);
+		conn->msg = (TfwMsg *)hmsib;
+		hmsib = NULL;
+		goto next_req;
+	}
+
+	if (r == TFW_POSTPONE)
+		r = TFW_PASS;
+err:
+	/*
+	 * According to RFC 7230 6.3.2, connection with a client
+	 * must be closed after a response is sent to that client,
+	 * if the client sends "Connection: close" header field in
+	 * the request. Subsequent requests from the client coming
+	 * over the same connection are ignored.
+	 *
+	 * Note: This connection's @conn must not be dereferenced
+	 * from this point on.
+	 */
+	kfree_skb(skb);
 
 	return r;
 }
@@ -2985,20 +3302,8 @@ tfw_http_resp_cache(TfwHttpMsg *hmresp)
 {
 	TfwHttpReq *req = hmresp->req;
 	TfwFsmData data;
-	time_t timestamp = tfw_current_timestamp();
+	int r;
 
-	/*
-	 * The time the response was received is used in cache
-	 * for age calculations, and for APM and Load Balancing.
-	 */
-	hmresp->cache_ctl.timestamp = timestamp;
-	((TfwHttpResp *)hmresp)->jrxtstamp = jiffies;
-	/*
-	 * If 'Date:' header is missing in the response, then
-	 * set the date to the time the response was received.
-	 */
-	if (!(hmresp->flags & TFW_HTTP_F_HDR_DATE))
-		((TfwHttpResp *)hmresp)->date = timestamp;
 	/*
 	 * Response is fully received, delist corresponding request from
 	 * fwd_queue.
@@ -3009,8 +3314,9 @@ tfw_http_resp_cache(TfwHttpMsg *hmresp)
 	 * send anywhere.
 	 */
 	if (req->flags & TFW_HTTP_F_HMONITOR) {
+		/* TODO 498 streamed message*/
 		tfw_http_hm_drop_resp((TfwHttpResp *)hmresp);
-		return 0;
+		return TFW_PASS;
 	}
 	/*
 	 * This hook isn't in tfw_http_resp_fwd() because responses from the
@@ -3020,25 +3326,16 @@ tfw_http_resp_cache(TfwHttpMsg *hmresp)
 	data.off = 0;
 	data.req = (TfwMsg *)req;
 	data.resp = (TfwMsg *)hmresp;
-	tfw_gfsm_move(&hmresp->conn->state, TFW_HTTP_FSM_RESP_MSG_FWD, &data);
+	r = tfw_gfsm_move(&hmresp->conn->state, TFW_HTTP_FSM_RESP_MSG_FWD,
+			  &data);
+	TFW_DBG3("TFW_HTTP_FSM_RESP_MSG_FWD return code %d\n", r);
+	if (r != TFW_PASS)
+		return r;
 
-	/*
-	 * Complete HTTP message has been collected and processed
-	 * with success. Mark the message as complete in @conn as
-	 * further handling of @conn depends on that. Future SKBs
-	 * will be put in a new message.
-	 */
-	tfw_connection_unlink_msg(hmresp->conn);
 	if (tfw_cache_process(hmresp, tfw_http_resp_cache_cb))
-	{
-		tfw_http_conn_msg_free(hmresp);
-		tfw_http_send_resp(req, 500, "response dropped:"
-				   " processing error");
-		TFW_INC_STAT_BH(serv.msgs_otherr);
-		/* Proceed with processing of the next response. */
-	}
+		return TFW_BLOCK;
 
-	return 0;
+	return TFW_PASS;
 }
 
 /*
@@ -3056,7 +3353,7 @@ tfw_http_resp_terminate(TfwHttpMsg *hm)
 	 * sent to the client. The full skb->len is used as the
 	 * offset to mark this case in the post-processing phase.
 	 */
-	data.skb = ss_skb_peek_tail(&hm->msg.skb_head);
+	data.skb = ss_skb_peek_tail(&hm->msg.head_skb); /* TODO 498 */
 	BUG_ON(!data.skb);
 	data.off = data.skb->len;
 	data.req = NULL;
@@ -3067,73 +3364,49 @@ tfw_http_resp_terminate(TfwHttpMsg *hm)
 	tfw_http_resp_cache(hm);
 }
 
+static int
+tfw_http_stream_resp(TfwHttpResp *resp)
+{
+	int r = 0;
+	return r;
+}
+
 /**
  * @return zero on success and negative value otherwise.
- * TODO enter the function depending on current GFSM state.
  */
-static int
+int
 tfw_http_resp_process(TfwConn *conn, const TfwFsmData *data)
 {
 	int r = TFW_BLOCK;
 	struct sk_buff *skb = data->skb;
 	unsigned int off = data->off;
-	unsigned int data_off = off;
-	unsigned int skb_len = skb->len;
-	TfwHttpReq *bad_req;
-	TfwHttpMsg *hmresp;
 	TfwFsmData data_up;
-	bool filtout = false;
+	TfwHttpResp *resp;
+	TfwHttpReq *bad_req;
+	TfwHttpMsg *hmresp, *hmsib = NULL;
+	bool stream_mode, filtout = false;
+	__HTTP_FSM_INIT();
 
 	BUG_ON(!conn->msg);
-	BUG_ON(data_off >= skb_len);
+	BUG_ON(off >= skb->len);
 
 	TFW_DBG2("received %u server data bytes on conn=%p msg=%p\n",
-		skb->len - off, conn, conn->msg);
+		 skb->len - off, conn, conn->msg);
+
 	/*
-	 * Process pipelined requests in a loop
-	 * until all data in the SKB is processed.
+	 * Process pipelined responses in a loop until all data in the SKB
+	 * is processed.
 	 */
-	while (data_off < skb_len) {
-		TfwHttpMsg *hmsib = NULL;
-		TfwHttpParser *parser;
-
-		hmresp = (TfwHttpMsg *)conn->msg;
-		parser = &hmresp->parser;
-
-		/*
-		 * Process/parse data in the SKB.
-		 * @off points at the start of data for processing.
-		 * @data_off is the current offset of data to process in
-		 * the SKB. After processing @data_off points at the end
-		 * of latest data chunk. However processing may have
-		 * stopped in the middle of the chunk. Adjust it to point
-		 * at correct location within the chunk.
-		 */
-		off = data_off;
-		r = ss_skb_process(skb, &data_off, tfw_http_parse_resp, hmresp);
-		data_off -= parser->to_go;
-		hmresp->msg.len += data_off - off;
-		TFW_ADD_STAT_BH(data_off - off, serv.rx_bytes);
-
-		TFW_DBG2("Response parsed: len=%u parsed=%d msg_len=%lu"
-			 " ver=%d res=%d\n",
-			 skb_len - off, data_off - off, hmresp->msg.len,
-			 hmresp->version, r);
-
-		/*
-		 * We have to keep @data the same to pass it as is to FSMs
-		 * registered with lower priorities after us, but we must
-		 * feed the new data version to FSMs registered on our states.
-		 */
-		data_up.skb = skb;
-		data_up.off = off;
-		data_up.req = NULL;
-		data_up.resp = (TfwMsg *)hmresp;
-
+next_resp:
+	resp = (TfwHttpResp *)conn->msg;
+	hmresp = (TfwHttpMsg *)conn->msg;
+	/* Process one message. */
+	while (skb && (r != TFW_PASS)) {
+		r = tfw_http_parse_skb(conn, &skb, &off, &data_up);
 		switch (r) {
 		default:
-			TFW_ERR("Unrecognized HTTP response "
-				"parser return code, %d\n", r);
+			TFW_ERR("Unrecognized HTTP response parser return code"
+				" %d\n", r);
 			BUG();
 		case TFW_BLOCK:
 			/*
@@ -3146,23 +3419,20 @@ tfw_http_resp_process(TfwConn *conn, const TfwFsmData *data)
 			 */
 			TFW_DBG2("Block invalid HTTP response\n");
 			TFW_INC_STAT_BH(serv.msgs_parserr);
-			goto bad_msg;
+			goto bad_resp;
+
+		case TFW_SPLIT:
 		case TFW_POSTPONE:
 			r = tfw_gfsm_move(&conn->state, TFW_HTTP_FSM_RESP_CHUNK,
 					  &data_up);
 			TFW_DBG3("TFW_HTTP_FSM_RESP_CHUNK return code %d\n", r);
-			if (r == TFW_BLOCK) {
-				TFW_INC_STAT_BH(serv.msgs_filtout);
-				filtout = true;
-				goto bad_msg;
-			}
-			/*
-			 * TFW_POSTPONE status means that parsing succeeded
-			 * but more data is needed to complete it. Lower layers
-			 * just supply data for parsing. They only want to know
-			 * if processing of a message should continue or not.
-			 */
-			return TFW_PASS;
+			if (r != TFW_BLOCK)
+				break;
+
+			TFW_INC_STAT_BH(serv.msgs_filtout);
+			filtout = true;
+			goto bad_resp;
+
 		case TFW_PASS:
 			/*
 			 * The response is fully parsed, fall through and
@@ -3172,8 +3442,59 @@ tfw_http_resp_process(TfwConn *conn, const TfwFsmData *data)
 			if (!(hmresp->flags & (TFW_HTTP_F_CHUNKED
 					       | TFW_HTTP_F_VOID_BODY))
 			    && (hmresp->content_length != hmresp->body.len))
-				goto bad_msg;
+			{
+				TFW_INC_STAT_BH(serv.msgs_parserr);
+				goto bad_resp;
+			}
+			break;
 		}
+	}
+	stream_mode = __tfw_http_msg_is_streamed(hmresp);
+
+	/*
+	 * Message is not streamed and not parsed fully, don't wait time on fsm.
+	 */
+	if (!stream_mode && (r == TFW_POSTPONE))
+		return TFW_PASS;
+
+	/* At least part of response is parsed. */
+	__HTTP_FSM_START(resp->state.st) {
+
+	/* A new response is received . */
+	__HTTP_FSM_STATE(Http_Msg_0) {
+		/*
+		 * The time the response was received is used in cache
+		 * for age calculations, and for APM and Load Balancing.
+		 */
+		resp->cache_ctl.timestamp = tfw_current_timestamp();
+		resp->jrxtstamp = jiffies;
+
+		__HTTP_FSM_JUMP(Http_Msg_Buffer);
+	}
+
+	/*
+	 * Buffer message before processing it. Headers must be fully parsed
+	 * before processing the message. Even in stream mode.
+	 */
+	__HTTP_FSM_STATE(Http_Msg_Buffer) {
+		int p_stage = tfw_http_parse_stage(hmresp);
+
+		if (p_stage == TFW_HTTP_PARSE_HEADERS)
+			__HTTP_FSM_EXIT();
+		if ((p_stage == TFW_HTTP_PARSE_DONE) || stream_mode)
+			__HTTP_FSM_JUMP(Http_Msg_Headers);
+
+		__HTTP_FSM_EXIT();
+	}
+
+	/* Headers are fully parsed, message processing can be started. */
+	__HTTP_FSM_STATE(Http_Msg_Headers) {
+		/*
+		 * If 'Date:' header is missing in the response, then
+		 * set the date to the time the response was received.
+		 */
+		if (!(resp->flags & TFW_HTTP_F_HDR_DATE))
+			resp->date = resp->cache_ctl.timestamp;
 
 		/*
 		 * Verify response in context of http health monitor,
@@ -3186,71 +3507,164 @@ tfw_http_resp_process(TfwConn *conn, const TfwFsmData *data)
 		 * new requests to the server and forward all, probably error
 		 * responses, for queued requests to clients.
 		 */
+		/* TODO 498 */
 		tfw_http_hm_control((TfwHttpResp *)hmresp);
 
 		/*
+		 * If the request's requested closing of connection after
+		 * corresponding response, the there is no need to transform
+		 * the body to chunked encoding, closing of the connection
+		 * means message end.
+		 */
+		if (unlikely(hmresp->flags & TFW_HTTP_F_MSG_LEN_UNKNOWN)
+		    && !(hmresp->req->flags & TFW_HTTP_F_CONN_CLOSE))
+		{
+			/*
+			 * A server MUST NOT send a response containing
+			 * Transfer-Encoding unless the corresponding
+			 * request indicates HTTP/1.1 (or later).
+			 */
+			if (hmresp->req->version >= TFW_HTTP_VER_11)
+				hmresp->flags |= TFW_HTTP_F_CHUNKED_TRANSFORM;
+			else
+				hmresp->flags |= TFW_HTTP_F_CONN_CLOSE;
+		}
+
+		if (!stream_mode)
+			__HTTP_FSM_JUMP(Http_Msg_Done);
+		__HTTP_FSM_JUMP(Http_Msg_Fwd);
+	}
+
+	/*
+	 * Error during message processing, unable to recover or send response.
+	 */
+	__HTTP_FSM_STATE(Http_Msg_Conn_Drop) {
+		r = TFW_BLOCK;
+		__HTTP_FSM_EXIT();
+	}
+
+	/* Message is fully parsed. */
+	__HTTP_FSM_STATE(Http_Msg_Done) {
+		/*
 		 * Pass the response to GFSM for further processing.
-		 * Drop server connection in case of serious error or security
-		 * event.
+		 * Drop server connection in case of serious error
+		 * or security event.
 		 */
 		r = tfw_http_resp_gfsm(hmresp, &data_up);
-		if (unlikely(r < TFW_PASS))
-			return TFW_BLOCK;
+		if (unlikely(r < TFW_PASS)) {
+			TFW_INC_STAT_BH(serv.msgs_filtout);
+			filtout = true;
+			goto bad_resp;
+		}
 
 		/*
 		 * If @skb's data has not been processed in full, then
 		 * we have pipelined responses. Create a sibling message.
 		 * @skb is replaced with a pointer to a new SKB.
 		 */
-		if (data_off < skb_len) {
-			hmsib = tfw_http_msg_create_sibling(hmresp, &skb,
-							    data_off);
+		if (skb) {
 			/*
-			 * In case of an error there's no recourse. The
-			 * caller expects that data is processed in full,
-			 * and can't deal with partially processed data.
+			 * If a non critical error occurred in GFSM processing,
+			 * then the response and the paired request had been
+			 * handled. Keep the server connection open for data
+			 * exchange.
 			 */
+			if (unlikely(r != TFW_PASS)) {
+				hmsib = (TfwHttpMsg *)
+						tfw_http_conn_msg_alloc(conn);
+				r = TFW_PASS;
+			}
+			else {
+				hmsib = tfw_http_msg_create_sibling(hmresp);
+			}
 			if (unlikely(!hmsib)) {
 				TFW_INC_STAT_BH(serv.msgs_otherr);
-				/*
-				 * Unable to create a sibling message.
-				 * Send the parsed response to the client
-				 * and close the server connection.
-				 */
-				tfw_http_resp_cache(hmresp);
-				return TFW_BLOCK;
+				r = TFW_BLOCK;
 			}
 		}
 
 		/*
-		 * If a non critical error occured in further GFSM processing,
-		 * then the response and the paired request had been handled.
-		 * Keep the server connection open for data exchange.
+		 * Complete HTTP message has been collected and processed
+		 * with success. Mark the message as complete in @conn as
+		 * further handling of @conn depends on that. Future SKBs
+		 * will be put in a new message.
 		 */
-		if (unlikely(r != TFW_PASS)) {
-			r = TFW_PASS;
-			goto next_resp;
-		}
+		tfw_connection_unlink_msg(hmresp->conn);
+
+		/*
+		 * Proxy mode: the response is fully buffered and processed,
+		 * forward it to client and cache. The response must not be
+		 * dereferenced after forwarding.
+		 */
+		if (!stream_mode)
+			__HTTP_FSM_JUMP(Http_Msg_Fwd);
+		/*
+		 * Streaming mode: the response was already forwarded to client
+		 * or cache, all it's parts was streamed to client too, no
+		 * more actions required.
+		 */
+		__HTTP_FSM_EXIT();
+	}
+
+	/* Message is fully parsed. */
+	__HTTP_FSM_STATE(Http_Msg_Fwd) {
 		/*
 		 * Pass the response to cache for further processing.
 		 * In the end, the response is sent on to the client.
 		 */
-		if (tfw_http_resp_cache(hmresp))
-			return TFW_BLOCK;
-next_resp:
-		if (hmsib) {
-			/*
-			 * Switch the connection to the sibling message.
-			 * Data processing will continue with the new SKB.
-			 */
-			data_off = 0;
-			skb_len = skb->len;
-			conn->msg = (TfwMsg *)hmsib;
+		if (tfw_http_resp_cache(hmresp)) {
+			TfwHttpReq *req = resp->req;
+
+			tfw_http_conn_msg_free(hmresp);
+			tfw_http_send_resp(req, 500,
+					   "response dropped: processing error");
+			TFW_INC_STAT_BH(serv.msgs_otherr);
+
+			/* Despite processing failure, the response was parsed
+			 * successfully, proceed to the next response. */
+			r = TFW_PASS;
 		}
+
+		if (!stream_mode)
+			__HTTP_FSM_EXIT();
+		__HTTP_FSM_JUMP(Http_Msg_Stream);
 	}
 
+	/*
+	 * Stream message parts to client.
+	 */
+	__HTTP_FSM_STATE(Http_Msg_Stream) {
+		int err;
+
+		err = tfw_http_stream_resp(resp);
+		if (err) {
+			TFW_INC_STAT_BH(serv.msgs_otherr);
+			goto bad_resp;
+		}
+		if (tfw_http_parse_stage(hmresp) != TFW_HTTP_PARSE_DONE)
+			__HTTP_FSM_EXIT();
+		__HTTP_FSM_JUMP(Http_Msg_Done);
+	}
+
+	__HTTP_FSM_FINISH(resp);
+	}
+
+	/* Switch connection to the new sibling message. */
+	if (hmsib) {
+		BUG_ON(!skb);
+		conn->msg = (TfwMsg *)hmsib;
+		hmsib = NULL;
+		goto next_resp;
+	}
+
+	if (r == TFW_POSTPONE)
+		r = TFW_PASS;
+	/* Free unparsed skb, not attached to any message. */
+	kfree_skb(skb);
+
 	return r;
-bad_msg:
+
+bad_resp:
 	/*
 	 * Send error response for the bad requests if necessary.
 	 * In any case remove the request form forward and nip queues -
@@ -3261,12 +3675,13 @@ bad_msg:
 	tfw_http_conn_msg_free(hmresp);
 	if (filtout)
 		tfw_srv_client_block(bad_req, 502,
-				     "response blocked:"
-				     " filtered out");
+				     "response blocked: filtered out");
 	else
 		tfw_srv_client_drop(bad_req, 502,
-				    "response dropped:"
-				    " processing error");
+				    "response dropped: processing error");
+	/* Free unparsed skb, not attached to any message. */
+	kfree_skb(skb);
+
 	return TFW_BLOCK;
 }
 
@@ -3287,9 +3702,6 @@ tfw_http_msg_process(void *conn, const TfwFsmData *data)
 		tfw_http_mark_wl_new_msg(c, (TfwHttpMsg *)c->msg, data->skb);
 		TFW_DBG2("Link new msg %p with connection %p\n", c->msg, c);
 	}
-
-	TFW_DBG2("Add skb %p to message %p\n", data->skb, c->msg);
-	ss_skb_queue_tail(&c->msg->skb_head, data->skb);
 
 	return (TFW_CONN_TYPE(c) & Conn_Clnt)
 		? tfw_http_req_process(c, data)

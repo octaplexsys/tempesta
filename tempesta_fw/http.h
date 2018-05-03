@@ -373,6 +373,25 @@ typedef struct {
 	unsigned short	status;
 }TfwHttpError;
 
+/**
+ * Message processing state.
+ *
+ * @st			- current processing state;
+ * @body_off		- offset of current valid body part;
+ * @tr_procesed		- trailer was processed with other headers;
+ * @stream_conn		- connection used to stream message;
+ *
+ * When the message is streamed, not all TfwStr chunks of hm->body are valid.
+ * Previous chunks may be already sent and underlying skbs may be destroyed,
+ * later chunks was not received yet.
+ */
+typedef struct {
+	unsigned int	st;
+	size_t		body_off;
+	bool		tr_procesed;
+	TfwConn		*stream_conn;
+} TfwHttpMsgState;
+
 typedef struct tfw_http_msg_t	TfwHttpMsg;
 typedef struct tfw_http_req_t	TfwHttpReq;
 typedef struct tfw_http_resp_t	TfwHttpResp;
@@ -396,6 +415,7 @@ typedef struct tfw_http_resp_t	TfwHttpResp;
  *			  updates are possible;
  * @content_length	- the value of Content-Length header field;
  * @keep_alive		- the value of timeout specified in Keep-Alive header;
+ * @state		- http processing state;
  * @conn		- connection which the message was received on;
  * @destructor		- called when a connection is destroyed;
  * @crlf		- pointer to CRLF between headers and body;
@@ -430,6 +450,7 @@ typedef struct tfw_http_resp_t	TfwHttpResp;
 	unsigned int	flags;						\
 	unsigned long	content_length;					\
 	unsigned int	keep_alive;					\
+	TfwHttpMsgState	state;						\
 	TfwConn		*conn;						\
 	void (*destructor)(void *msg);					\
 	TfwStr		crlf;						\
