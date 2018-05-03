@@ -41,6 +41,7 @@
 
 #include "cfg.h"
 #include "http_msg.h"
+#include "http_parser.h"
 #include "helpers.h"
 #include "sched_helper.h"
 #include "test.h"
@@ -99,7 +100,7 @@ test_req(char *req_str, TfwSrvConn *expect_conn)
 
 		BUG_ON(req_str_len + 1 > sizeof(req_str_copy));
 		strcpy(req_str_copy, req_str);
-		tfw_http_parse_req(req, req_str_copy, req_str_len);
+		test_parse_req_helper(req, req_str_copy, req_str_len);
 	}
 
 	sched = tfw_sched_lookup("http");

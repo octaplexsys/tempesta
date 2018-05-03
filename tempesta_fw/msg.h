@@ -30,7 +30,20 @@
 /**
  * @seq_list	- member in the ordered queue of messages;
  * @ss_flags	- message processing flags;
- * @skb_head	- head of the list of sk_buff that belong to the message;
+ * @head_skb	- head of the list of sk_buff that belong to the message and
+ *		  stores buffered part of the message: headers and possibly
+ *		  body and trailer. These skb's are stored until message is
+ *		  is destroyed;
+ * @body_skb	- head of the list of sk_buff that belong to the message and
+ *		  stores streaming part of the message: body. Unlike to
+ *		  @head_skb, @body_skb are stored very limited amount of time
+ *		  which is less than message life time;
+ * @trailer_skb	- head of the list of sk_buff that belong to the message and
+ *		  stores message trailer part. Trailer part contains headers,
+ *		  which can be modified before forwarding, thus buffering of
+ *		  trailer part is also required.
+ * @stream_lock	- message is in stream mode, several threads may need write
+ *		  access to @body_skb;
  * @len		- total message length;
  *
  * TODO: Currently seq_list is used only in requests. Responses are not
@@ -43,7 +56,10 @@
  */
 typedef struct {
 	struct list_head	seq_list;
-	struct sk_buff		*skb_head;
+	struct sk_buff		*head_skb;
+	struct sk_buff		*body_skb;
+	struct sk_buff		*trailer_skb;
+	spinlock_t		stream_lock;
 	int			ss_flags;
 	size_t			len;
 } TfwMsg;

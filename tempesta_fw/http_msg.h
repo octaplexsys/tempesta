@@ -51,8 +51,7 @@ __tfw_http_msg_set_str_data(TfwStr *str, void *data, struct sk_buff *skb)
 	str->skb = skb;
 }
 #define tfw_http_msg_set_str_data(hm, str, data)			\
-	__tfw_http_msg_set_str_data(str, data,				\
-				    ss_skb_peek_tail(&hm->msg.skb_head))
+	__tfw_http_msg_set_str_data(str, data, hm->parser.skb)
 
 void __http_msg_hdr_val(TfwStr *hdr, unsigned id, TfwStr *val, bool client);
 
@@ -102,8 +101,7 @@ tfw_http_msg_alloc_resp_light(TfwHttpReq *req)
 int __tfw_http_msg_add_str_data(TfwHttpMsg *hm, TfwStr *str, void *data,
 				size_t len, struct sk_buff *skb);
 #define tfw_http_msg_add_str_data(hm, str, data, len)			\
-	__tfw_http_msg_add_str_data(hm, str, data, len,			\
-				    ss_skb_peek_tail(&hm->msg.skb_head))
+	__tfw_http_msg_add_str_data(hm, str, data, len, hm->parser.skb)
 
 unsigned int tfw_http_msg_hdr_lookup(TfwHttpMsg *hm, const TfwStr *hdr);
 int tfw_http_msg_hdr_add(TfwHttpMsg *hm, const TfwStr *hdr);

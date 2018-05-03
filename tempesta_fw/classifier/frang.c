@@ -696,7 +696,7 @@ frang_http_req_process(FrangAcc *ra, TfwConn *conn, const TfwFsmData *data)
 	int r = TFW_PASS;
 	TfwHttpReq *req = (TfwHttpReq *)data->req;
 	struct sk_buff *skb = data->skb;
-	struct sk_buff *head_skb = req->msg.skb_head;
+	struct sk_buff *head_skb = req->msg.head_skb;
 	__FRANG_FSM_INIT();
 
 	BUG_ON(!ra);

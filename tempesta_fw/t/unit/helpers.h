@@ -26,5 +26,16 @@ TfwHttpReq *test_req_alloc(size_t data_len);
 void test_req_free(TfwHttpReq *req);
 TfwHttpResp *test_resp_alloc(size_t data_len);
 void test_resp_free(TfwHttpResp *req);
+int test_parse_helper(TfwHttpMsg *hm, ss_skb_actor_t actor);
+int test_parse_str_helper(TfwHttpMsg *hm, ss_skb_actor_t actor,
+			  unsigned char *str, size_t len, size_t chunks);
+
+#define test_parse_req_helper(req, str, len)				\
+	test_parse_str_helper((TfwHttpMsg *)(req), tfw_http_parse_req,	\
+			      (str), (len), 1)
+
+#define test_parse_resp_helper(resp, str, len)				\
+	test_parse_str_helper((TfwHttpMsg *)(resp), tfw_http_parse_resp,\
+			      (str), (len), 1)
 
 #endif /* __TFW_TEST_HELPER_H__ */

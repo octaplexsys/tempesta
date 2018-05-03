@@ -43,6 +43,7 @@
 #include "helpers.h"
 #include "sched_helper.h"
 #include "server.h"
+#include "http_parser.h"
 #include "test.h"
 
 static TfwMsg *sched_ratio_get_arg(size_t conn_type);
@@ -65,7 +66,7 @@ sched_ratio_get_arg(size_t conn_type)
 	BUG_ON(conn_type >= sched_helper_ratio.conn_types);
 
 	req = test_req_alloc(strlen(str));
-	tfw_http_parse_req(req, str, strlen(str));
+	test_parse_req_helper(req, str, strlen(str));
 
 	return (TfwMsg *)req;
 }

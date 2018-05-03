@@ -172,7 +172,8 @@ tfw_bmb_conn_recv(void *cdata, struct sk_buff *skb, unsigned int off)
 		unsigned int data_off = 0;
 
 		TFW_LOG("Server response:\n------------------------------\n");
-		ss_skb_process(skb, &data_off, tfw_bmb_print_msg, NULL);
+		ss_skb_process(skb, &data_off, ULONG_MAX, tfw_bmb_print_msg,
+			       NULL);
 		printk(KERN_INFO "\n------------------------------\n");
 	}
 
@@ -263,7 +264,7 @@ tfw_bmb_msg_send(TfwBmbTask *task, int cn)
 	BUG_ON(msg.len > BUF_SIZE);
 
 	memset(&hmreq, 0, sizeof(hmreq));
-	hmreq.msg.skb_head = NULL;
+	hmreq.msg.head_skb = NULL;
 
 	if (!tfw_http_msg_setup(&hmreq, &it, msg.len)) {
 		TFW_WARN("Cannot create HTTP request.\n");
@@ -278,7 +279,7 @@ tfw_bmb_msg_send(TfwBmbTask *task, int cn)
 			task->buf);
 
 	tfw_http_msg_write(&it, &hmreq, &msg);
-	ss_send(task->conn[cn].sk, &hmreq.msg.skb_head, true);
+	ss_send(task->conn[cn].sk, &hmreq.msg.head_skb, true);
 
 	atomic_inc(&bmb_request_send);
 }

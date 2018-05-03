@@ -28,6 +28,7 @@
 #include "client.h"
 #include "hash.h"
 #include "http_msg.h"
+#include "http_parser.h"
 #include "http_sess.h"
 #include "log.h"
 #include "procfs.h"

@@ -128,6 +128,11 @@ enum {
 	 * (if it is deemed innocent) with subsequent message/packets at once.
 	 */
 	TFW_POSTPONE	= SS_POSTPONE,
+
+	/*
+	 * Need to split skb into parts before parsing the rest of the message.
+	 */
+	TFW_SPLIT	= SS_SPLIT,
 };
 
 /**

@@ -153,18 +153,19 @@ tfw_connection_send(TfwConn *conn, TfwMsg *msg)
 	DEFINE_TFW_STR(hdr_value, NULL);
 
 	BUG_ON(!msg);
-	BUG_ON(!msg->skb_head);
+	BUG_ON(!msg->head_skb);
 	BUG_ON(!conn);
 
 	mock.tfw_connection_send_was_called += 1;
 
-	skb = msg->skb_head;
+	skb = msg->head_skb;
 	do {
 		int ret;
-		ret = ss_skb_process(skb, &data_off, tfw_http_parse_resp,
-				     mock.resp);
+		mock.resp->parser.skb = skb;
+		ret = ss_skb_process(skb, &data_off, ULONG_MAX,
+				     tfw_http_parse_resp, mock.resp);
 		skb = skb->next;
-	} while (skb != msg->skb_head);
+	} while (skb != msg->head_skb);
 
 	mock.http_status = mock.resp->status;
 
@@ -220,12 +221,12 @@ http_sticky_suite_setup(void)
 	skb = alloc_skb(PAGE_SIZE, GFP_ATOMIC);
 	BUG_ON(!skb);
 	skb_reserve(skb, MAX_TCP_HEADER);
-	ss_skb_queue_tail(&mock.req->msg.skb_head, skb);
+	ss_skb_queue_tail(&mock.req->msg.head_skb, skb);
 
 	skb = alloc_skb(PAGE_SIZE, GFP_ATOMIC);
 	BUG_ON(!skb);
 	skb_reserve(skb, MAX_TCP_HEADER);
-	ss_skb_queue_tail(&mock.resp->msg.skb_head, skb);
+	ss_skb_queue_tail(&mock.resp->msg.head_skb, skb);
 
 	tfw_connection_init(&mock.conn_req);
 	tfw_connection_init(&mock.conn_resp);
@@ -344,7 +345,7 @@ append_string_to_msg(TfwHttpMsg *hm, const char *s)
 	BUG_ON(!s);
 	len = strlen(s);
 
-	skb = hm->msg.skb_head;
+	skb = hm->msg.head_skb;
 	BUG_ON(!skb);
 
 	ptr = skb_put(skb, len);
@@ -353,36 +354,9 @@ append_string_to_msg(TfwHttpMsg *hm, const char *s)
 }
 
 static int
-http_parse_helper(TfwHttpMsg *hm, ss_skb_actor_t actor)
-{
-	struct sk_buff *skb;
-	unsigned int off;
-
-	skb = hm->msg.skb_head;
-	BUG_ON(!skb);
-	off = 0;
-	while (1) {
-		switch (ss_skb_process(skb, &off, actor, hm)) {
-		case TFW_POSTPONE:
-			if (skb->next == hm->msg.skb_head)
-				return -1;
-			skb = skb->next;
-			continue;
-
-		case TFW_PASS:
-			/* sucessfully parsed */
-			return 0;
-
-		default:
-			return -1;
-		}
-	}
-}
-
-static int
 http_parse_req_helper(void)
 {
-	return http_parse_helper((TfwHttpMsg *)mock.req, tfw_http_parse_req);
+	return test_parse_helper((TfwHttpMsg *)mock.req, tfw_http_parse_req);
 }
 
 static int
@@ -397,7 +371,7 @@ http_parse_resp_helper(void)
 	TFW_STR_INIT(&mock.resp->body);
 	TFW_STR_INIT(&mock.resp->s_line);
 
-	return http_parse_helper((TfwHttpMsg *)mock.resp, tfw_http_parse_resp);
+	return test_parse_helper((TfwHttpMsg *)mock.resp, tfw_http_parse_resp);
 }
 
 TEST(http_sticky, sticky_get_absent)

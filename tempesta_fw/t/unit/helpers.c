@@ -97,3 +97,57 @@ test_resp_free(TfwHttpResp *resp)
 	BUG_ON(!resp);
 	tfw_http_msg_free((TfwHttpMsg *)resp);
 }
+
+int
+test_parse_helper(TfwHttpMsg *hm, ss_skb_actor_t actor)
+{
+	struct sk_buff *skb;
+	unsigned int off;
+
+	skb = hm->msg.head_skb;
+	BUG_ON(!skb);
+	off = 0;
+	while (1) {
+		hm->parser.skb = skb;
+		switch (ss_skb_process(skb, &off, ULONG_MAX, actor, hm)) {
+		case TFW_POSTPONE:
+			if (skb->next == hm->msg.head_skb)
+				return -1;
+			skb = skb->next;
+			continue;
+
+		case TFW_PASS:
+			/* successfully parsed */
+			return 0;
+
+		default:
+			return -1;
+		}
+	}
+}
+
+int test_parse_str_helper(TfwHttpMsg *hm, ss_skb_actor_t actor,
+			  unsigned char *str, size_t len, size_t chunks)
+{
+	size_t chlen = len / chunks, rem = len % chunks, pos = 0, step;
+	int r = 0;
+
+	/* Data comes not from skb, so just use the very first skb. */
+	hm->parser.skb = hm->msg.head_skb;
+	BUG_ON(!hm->parser.skb);
+
+	while (pos < len) {
+		step = chlen;
+		if (rem) {
+			step += rem;
+			rem = 0;
+		}
+
+		r = actor(hm, str + pos, step);
+		if (r != TFW_POSTPONE)
+			return r;
+		pos += step;
+	}
+
+	return r;
+}

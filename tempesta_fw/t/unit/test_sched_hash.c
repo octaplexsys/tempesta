@@ -42,6 +42,7 @@
 
 #include "helpers.h"
 #include "http_msg.h"
+#include "http_parser.h"
 #include "sched_helper.h"
 #include "test.h"
 
@@ -76,9 +77,9 @@ sched_hash_get_arg(size_t conn_type)
 	BUG_ON(conn_type >= sched_helper_hash.conn_types);
 
 	req = test_req_alloc(strlen(req_strs[conn_type]));
-	tfw_http_parse_req(req,
-			   (unsigned char *) req_strs[conn_type],
-			   strlen(req_strs[conn_type]));
+	test_parse_req_helper(req,
+			      (unsigned char *) req_strs[conn_type],
+			      strlen(req_strs[conn_type]));
 
 	return (TfwMsg *) req;
 }

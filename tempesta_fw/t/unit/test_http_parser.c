@@ -22,6 +22,7 @@
 #include <linux/vmalloc.h>
 
 #include "http_msg.h"
+#include "http_parser.h"
 
 #include "test.h"
 #include "helpers.h"
@@ -35,28 +36,22 @@ static TfwHttpResp *resp;
 static int
 split_and_parse_n(unsigned char *str, int type, size_t len, size_t chunks)
 {
-	size_t chlen = len / chunks, rem = len % chunks, pos = 0, step;
-	int r = 0;
+	int r;
+	TfwHttpMsg *hm;
+	ss_skb_actor_t actor;
 
-	while (pos < len) {
-		step = chlen;
-		if (rem) {
-			step += rem;
-			rem = 0;
-		}
-
-		TEST_DBG3("split: len=%zu pos=%zu, chunks=%zu step=%zu\n",
-			  len, pos, chunks, step);
-		if (type == FUZZ_REQ)
-			r = tfw_http_parse_req(req, str + pos, step);
-		else
-			r = tfw_http_parse_resp(resp, str + pos, step);
-
-		pos += step;
-
-		if (r != TFW_POSTPONE)
-			return r;
+	if (type == FUZZ_REQ) {
+		hm = (TfwHttpMsg *)req;
+		actor = tfw_http_parse_req;
 	}
+	else {
+		hm = (TfwHttpMsg *)resp;
+		actor = tfw_http_parse_resp;
+	}
+
+	r = test_parse_str_helper(hm, actor, str, len, chunks);
+	if (r == TFW_PASS)
+		EXPECT_EQ(tfw_http_parse_stage(hm), TFW_HTTP_PARSE_DONE);
 
 	return r;
 }
@@ -75,7 +70,7 @@ set_sample_req(unsigned char *str)
 		test_req_free(sample_req);
 	sample_req = test_req_alloc(len);
 
-	r = tfw_http_parse_req(sample_req, str, len);
+	r = test_parse_req_helper(sample_req, str, len);
 
 	return r;
 }

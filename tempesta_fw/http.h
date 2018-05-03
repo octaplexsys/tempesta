@@ -264,8 +264,9 @@ typedef struct {
  * @_tmp_chunk	- currently parsed (sub)string, possibly chunked;
  * @hdr		- currently parsed header.
  * @hbh_parser	- list of special and raw headers names to be treated as
- *		  hop-by-hop
+ *		  hop-by-hop;
  * @_date	- currently parsed http date value;
+ * @skb		- currently parsed skb;
  */
 typedef struct {
 	unsigned short	to_go;
@@ -279,6 +280,7 @@ typedef struct {
 	TfwStr		_tmp_chunk;
 	TfwStr		hdr;
 	TfwHttpHbhHdrs	hbh_parser;
+	struct sk_buff	*skb;
 } TfwHttpParser;
 
 enum {
@@ -294,6 +296,8 @@ enum {
 	TFW_HTTP_B_CHUNKED,
 	/* Singular header presents more than once. */
 	TFW_HTTP_B_FIELD_DUPENTRY,
+	/* Message is processed in streaming mode. */
+	TFW_HTTP_B_MSG_STREAM,
 
 	/* Request flags. */
 	TFW_HTTP_FLAGS_REQ,
@@ -326,6 +330,8 @@ enum {
 	TFW_HTTP_B_RESP_STALE,
 	/* Response is fully processed and ready to be forwarded to the client. */
 	TFW_HTTP_B_RESP_READY,
+	/* Message ends on connection closing. */
+	TFW_HTTP_B_MSG_LEN_UNKNOWN,
 
 	_TFW_HTTP_FLAGS_NUM
 };
@@ -337,6 +343,7 @@ enum {
 #define TFW_HTTP_F_CONN_EXTRA		(1U << TFW_HTTP_B_CONN_EXTRA)
 #define TFW_HTTP_F_CHUNKED		(1U << TFW_HTTP_B_CHUNKED)
 #define TFW_HTTP_F_FIELD_DUPENTRY	(1U << TFW_HTTP_B_FIELD_DUPENTRY)
+#define TFW_HTTP_F_MSG_STREAM		(1U << TFW_HTTP_B_MSG_STREAM)
 
 #define TFW_HTTP_F_HAS_STICKY		(1U << TFW_HTTP_B_HAS_STICKY)
 #define TFW_HTTP_F_URI_FULL		(1U << TFW_HTTP_B_URI_FULL)
@@ -352,6 +359,7 @@ enum {
 #define TFW_HTTP_F_HDR_LMODIFIED	(1U << TFW_HTTP_B_HDR_LMODIFIED)
 #define TFW_HTTP_F_RESP_STALE		(1U << TFW_HTTP_B_RESP_STALE)
 #define TFW_HTTP_F_RESP_READY		(1U << TFW_HTTP_B_RESP_READY)
+#define TFW_HTTP_F_MSG_LEN_UNKNOWN	(1U << TFW_HTTP_B_MSG_LEN_UNKNOWN)
 
 /*
  * The structure to hold data for an HTTP error response.
@@ -585,13 +593,6 @@ tfw_current_timestamp(void)
 }
 
 typedef void (*tfw_http_cache_cb_t)(TfwHttpMsg *);
-
-/* Internal (parser) HTTP functions. */
-void tfw_http_init_parser_req(TfwHttpReq *req);
-void tfw_http_init_parser_resp(TfwHttpResp *resp);
-int tfw_http_parse_req(void *req_data, unsigned char *data, size_t len);
-int tfw_http_parse_resp(void *resp_data, unsigned char *data, size_t len);
-bool tfw_http_parse_terminate(TfwHttpMsg *hm);
 
 /* External HTTP functions. */
 int tfw_http_msg_process(void *conn, const TfwFsmData *data);
